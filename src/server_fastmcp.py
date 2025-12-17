@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 from fastmcp import FastMCP
-from database.database import init_db, get_db_session
+from database.database import init_db, get_db_context
 from database.models import Shipment
 from sqlalchemy import select
 
@@ -57,7 +57,7 @@ async def search_shipments(
     logger.info(f"🔍 Searching shipments: risk={risk_flag}, status={status_code}, container={container_no}, bill={master_bill}, limit={limit}")
     
     try:
-        async with get_db_session() as session:
+        async with get_db_context() as session:
             query = select(Shipment)
             
             # Apply filters
@@ -117,7 +117,7 @@ async def track_shipment(identifier: str) -> dict:
     logger.info(f"📦 Tracking shipment: {identifier}")
     
     try:
-        async with get_db_session() as session:
+        async with get_db_context() as session:
             query = select(Shipment).where(
                 (Shipment.job_id == identifier) |
                 (Shipment.container_no == identifier) |
@@ -184,7 +184,7 @@ async def update_shipment_eta(
         from dateutil.parser import parse
         new_eta_dt = parse(new_eta)
         
-        async with get_db_session() as session:
+        async with get_db_context() as session:
             query = select(Shipment).where(
                 (Shipment.job_id == identifier) |
                 (Shipment.container_no == identifier) |
@@ -253,7 +253,7 @@ async def set_risk_flag(
     logger.info(f"🚨 Setting risk flag for {identifier} to {is_risk}")
     
     try:
-        async with get_db_session() as session:
+        async with get_db_context() as session:
             query = select(Shipment).where(
                 (Shipment.job_id == identifier) |
                 (Shipment.container_no == identifier) |
@@ -320,7 +320,7 @@ async def add_agent_note(
     logger.info(f"📝 Adding note to {identifier}")
     
     try:
-        async with get_db_session() as session:
+        async with get_db_context() as session:
             query = select(Shipment).where(
                 (Shipment.job_id == identifier) |
                 (Shipment.container_no == identifier) |
