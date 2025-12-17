@@ -480,6 +480,17 @@ async def handle_messages(request: Request):
                     }
                 },
                 {
+                    "name": "get_shipment_details",
+                    "description": "Get detailed information for a specific shipment (alias for track_shipment)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string", "description": "Job ID, container number, or bill of lading"}
+                        },
+                        "required": ["identifier"]
+                    }
+                },
+                {
                     "name": "update_shipment_eta",
                     "description": "Update estimated arrival time for a shipment",
                     "inputSchema": {
@@ -589,6 +600,17 @@ async def handle_messages(request: Request):
                             }
                         },
                         {
+                            "name": "get_shipment_details",
+                            "description": "Get detailed information for a specific shipment (alias for track_shipment)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "identifier": {"type": "string", "description": "Job ID, container number, or bill of lading"}
+                                },
+                                "required": ["identifier"]
+                            }
+                        },
+                        {
                             "name": "update_shipment_eta",
                             "description": "Update estimated arrival time for a shipment",
                             "inputSchema": {
@@ -656,6 +678,11 @@ async def handle_messages(request: Request):
             
             # Call the tool directly
             tools_obj = LogisticsTools(mcp_server)
+            
+            # Handle tool name aliases
+            if tool_name == "get_shipment_details":
+                logger.info("🔄 Mapping get_shipment_details → track_shipment")
+                tool_name = "track_shipment"
             
             if tool_name == "track_shipment":
                 result = await tools_obj.track_shipment(**arguments)
