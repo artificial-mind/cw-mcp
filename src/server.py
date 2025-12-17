@@ -139,104 +139,54 @@ async def server_info():
 
 
 @app.get("/sse")
-@app.post("/sse")
 async def handle_sse(request: Request):
     """
-    SSE endpoint for MCP protocol using proper MCP SDK transport
-    This is the primary endpoint for MCP clients (11Labs, Claude, etc.)
+    SSE endpoint for MCP protocol
+    Returns SSE stream that directs clients to POST to /messages
     """
-    from mcp.server.sse import SseServerTransport
-    from mcp.shared.memory import InMemoryStream
+    logger.info(f"� New SSE connection from {request.client.host}")
     
-    logger.info(f"🔌 New SSE connection from {request.client.host} (method: {request.method})")
-    
-    # Handle POST requests for client messages
-    if request.method == "POST":
-        try:
-            body = await request.json()
-            logger.info(f"📨 Received MCP message: {body}")
-            
-            # Create in-memory streams for this request
-            read_stream = InMemoryStream()
-            write_stream = InMemoryStream()
-            
-            # Write the incoming message to read stream
-            await read_stream.write(body)
-            
-            # Process with MCP server
-            await mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp_server.create_initialization_options()
-            )
-            
-            # Read response from write stream
-            response = await write_stream.read()
-            logger.info(f"📤 Sending MCP response: {response}")
-            
-            return JSONResponse(content=response)
-            
-        except Exception as e:
-            logger.error(f"❌ Error handling POST: {e}", exc_info=True)
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32603,
-                        "message": f"Internal error: {str(e)}"
-                    }
-                }
-            )
-    
-    # Handle GET for SSE stream
-    else:
-        async def event_generator():
-            """Generate SSE events for MCP protocol"""
-            import json
-            
-            try:
-                # Send endpoint message (MCP spec)
-                endpoint_msg = {
-                    "jsonrpc": "2.0",
-                    "method": "endpoint",
-                    "params": {
-                        "uri": str(request.url).replace("/sse", "/messages")
-                    }
-                }
-                yield f"event: endpoint\n"
-                yield f"data: {json.dumps(endpoint_msg)}\n\n"
-                
-                logger.info("✅ SSE stream established, sent endpoint")
-                
-                # Keep connection alive
-                while True:
-                    await asyncio.sleep(30)
-                    
-                    if await request.is_disconnected():
-                        logger.info("🔌 SSE client disconnected")
-                        break
-                    
-                    # Send ping to keep alive
-                    yield f": ping\n\n"
-                    
-            except asyncio.CancelledError:
-                logger.info("🔌 SSE connection cancelled")
-            except Exception as e:
-                logger.error(f"❌ SSE error: {e}", exc_info=True)
+    async def event_generator():
+        """Generate SSE events for MCP protocol"""
+        import json
         
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
-            }
-        )
+        try:
+            # Send endpoint message (tells client where to send messages)
+            endpoint_msg = f"{request.url.scheme}://{request.url.netloc}/messages"
+            
+            yield f"event: endpoint\n"
+            yield f"data: {endpoint_msg}\n\n"
+            
+            logger.info(f"✅ SSE stream established, endpoint: {endpoint_msg}")
+            
+            # Keep connection alive with pings
+            while True:
+                await asyncio.sleep(30)
+                
+                if await request.is_disconnected():
+                    logger.info("🔌 SSE client disconnected")
+                    break
+                
+                # Send ping comment (keeps connection alive)
+                yield f": ping\n\n"
+                
+        except asyncio.CancelledError:
+            logger.info("🔌 SSE connection cancelled")
+        except Exception as e:
+            logger.error(f"❌ SSE error: {e}", exc_info=True)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+        }
+    )
 
 
 def format_for_voice(result: dict, tool_name: str) -> str:
@@ -404,17 +354,113 @@ async def handle_messages(request: Request):
     """
     try:
         message = await request.json()
-        logger.debug(f"Received message: {message}")
+        logger.info(f"📨 Received MCP message: {message}")
         
         # Extract method and params
         method = message.get("method")
         params = message.get("params", {})
         msg_id = message.get("id", 1)
         
+        # Handle initialize
+        if method == "initialize":
+            logger.info("✅ Handling initialize request")
+            return JSONResponse(content={
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {
+                        "name": "logistics-orchestrator",
+                        "version": "1.0.0"
+                    },
+                    "capabilities": {
+                        "tools": {}
+                    }
+                }
+            })
+        
+        # Handle tools/list
+        elif method == "tools/list":
+            logger.info("✅ Handling tools/list request")
+            return JSONResponse(content={
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "tools": [
+                        {
+                            "name": "search_shipments",
+                            "description": "Search and filter shipments by criteria",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "risk_flag": {"type": "boolean"},
+                                    "status_code": {"type": "string"},
+                                    "container_no": {"type": "string"},
+                                    "master_bill": {"type": "string"},
+                                    "limit": {"type": "integer"}
+                                }
+                            }
+                        },
+                        {
+                            "name": "track_shipment",
+                            "description": "Get detailed tracking information for a shipment",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "identifier": {"type": "string", "description": "Job ID, container number, or bill of lading"}
+                                },
+                                "required": ["identifier"]
+                            }
+                        },
+                        {
+                            "name": "update_shipment_eta",
+                            "description": "Update estimated arrival time for a shipment",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "identifier": {"type": "string"},
+                                    "new_eta": {"type": "string"},
+                                    "reason": {"type": "string"}
+                                },
+                                "required": ["identifier", "new_eta"]
+                            }
+                        },
+                        {
+                            "name": "set_risk_flag",
+                            "description": "Flag a shipment as high-risk or remove risk flag",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "identifier": {"type": "string"},
+                                    "is_risk": {"type": "boolean"},
+                                    "reason": {"type": "string"}
+                                },
+                                "required": ["identifier", "is_risk"]
+                            }
+                        },
+                        {
+                            "name": "add_agent_note",
+                            "description": "Add an operational note to a shipment",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "identifier": {"type": "string"},
+                                    "note": {"type": "string"},
+                                    "agent_name": {"type": "string"}
+                                },
+                                "required": ["identifier", "note"]
+                            }
+                        }
+                    ]
+                }
+            })
+        
         # Handle tools/call
-        if method == "tools/call":
+        elif method == "tools/call":
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
+            
+            logger.info(f"🔧 Calling tool: {tool_name} with args: {arguments}")
             
             # Call the tool directly
             tools_obj = LogisticsTools(mcp_server)
@@ -432,29 +478,23 @@ async def handle_messages(request: Request):
             else:
                 result = {"error": f"Unknown tool: {tool_name}"}
             
-            return JSONResponse(content={
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": result
-            })
-        
-        # Handle tools/list
-        elif method == "tools/list":
+            logger.info(f"✅ Tool result: {result}")
+            
             return JSONResponse(content={
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
-                    "tools": [
-                        {"name": "track_shipment", "description": "Track a shipment by identifier"},
-                        {"name": "update_shipment_eta", "description": "Update shipment ETA"},
-                        {"name": "set_risk_flag", "description": "Flag shipment as high-risk"},
-                        {"name": "add_agent_note", "description": "Add note to shipment"},
-                        {"name": "search_shipments", "description": "Search for shipments"}
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": str(result)
+                        }
                     ]
                 }
             })
         
         else:
+            logger.warning(f"⚠️ Unknown method: {method}")
             return JSONResponse(content={
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -462,10 +502,17 @@ async def handle_messages(request: Request):
             })
     
     except Exception as e:
-        logger.error(f"Error handling message: {e}", exc_info=True)
+        logger.error(f"❌ Error handling message: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)}
+            content={
+                "jsonrpc": "2.0",
+                "id": msg_id if 'msg_id' in locals() else 1,
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }
         )
 
 
