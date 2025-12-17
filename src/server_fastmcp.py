@@ -27,9 +27,10 @@ mcp = FastMCP(
     version="1.0.0"
 )
 
-# Database is already initialized with data in logistics.db
-# No need to run init_db() - it would recreate empty tables
-logger.info("✅ Using static database file: logistics.db")
+# Initialize database schema if needed (creates tables but preserves existing data)
+import asyncio
+asyncio.run(init_db())
+logger.info("✅ Database ready (static logistics.db with sample data)")
 
 
 @mcp.tool()
