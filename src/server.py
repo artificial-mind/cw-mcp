@@ -158,8 +158,10 @@ async def handle_sse(request: Request):
             yield f"data: {endpoint_msg}\n\n"
             
             logger.info(f"✅ SSE stream established, endpoint: {endpoint_msg}")
+            logger.info(f"💡 Waiting for client to send initialize request")
             
             # Keep connection alive with pings
+            ping_count = 0
             while True:
                 await asyncio.sleep(30)
                 
@@ -167,8 +169,10 @@ async def handle_sse(request: Request):
                     logger.info("🔌 SSE client disconnected")
                     break
                 
+                ping_count += 1
                 # Send ping comment (keeps connection alive)
-                yield f": ping\n\n"
+                yield f": ping {ping_count}\n\n"
+                logger.debug(f"📡 SSE ping {ping_count}")
                 
         except asyncio.CancelledError:
             logger.info("🔌 SSE connection cancelled")
