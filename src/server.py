@@ -385,12 +385,15 @@ async def handle_messages(request: Request):
         
         # Handle initialize
         if method == "initialize":
-            logger.info("✅ Handling initialize request")
+            # Get client's protocol version to match
+            client_protocol = params.get("protocolVersion", "2024-11-05")
+            logger.info(f"✅ Handling initialize request (client protocol: {client_protocol})")
+            
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": client_protocol,  # Match client's version
                     "serverInfo": {
                         "name": "logistics-orchestrator",
                         "version": "1.0.0"
@@ -400,7 +403,7 @@ async def handle_messages(request: Request):
                     }
                 }
             }
-            logger.info(f"📤 Sending initialize response")
+            logger.info(f"📤 Sending initialize response with protocol {client_protocol}")
             return JSONResponse(content=response)
         
         # Handle tools/list
