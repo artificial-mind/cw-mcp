@@ -4,8 +4,8 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python src/server.py
+    buildCommand: pip install -r requirements.txt && cd src && python seed_database.py && cd ..
+    startCommand: cd src && python server.py
     envVars:
       - key: SERVER_HOST
         value: 0.0.0.0
