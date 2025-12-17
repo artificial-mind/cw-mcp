@@ -451,6 +451,88 @@ async def handle_messages(request: Request):
             client_protocol = params.get("protocolVersion", "2024-11-05")
             logger.info(f"✅ Handling initialize request (client protocol: {client_protocol})")
             
+            # EXPERIMENTAL: Include tools directly in initialize response
+            # Some clients (like 11Labs) might expect this instead of calling tools/list
+            tools_list = [
+                {
+                    "name": "search_shipments",
+                    "description": "Search and filter shipments by criteria",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "risk_flag": {"type": "boolean"},
+                            "status_code": {"type": "string"},
+                            "container_no": {"type": "string"},
+                            "master_bill": {"type": "string"},
+                            "limit": {"type": "integer"}
+                        }
+                    }
+                },
+                {
+                    "name": "track_shipment",
+                    "description": "Get detailed tracking information for a shipment",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string", "description": "Job ID, container number, or bill of lading"}
+                        },
+                        "required": ["identifier"]
+                    }
+                },
+                {
+                    "name": "update_shipment_eta",
+                    "description": "Update estimated arrival time for a shipment",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string"},
+                            "new_eta": {"type": "string"},
+                            "reason": {"type": "string"}
+                        },
+                        "required": ["identifier", "new_eta"]
+                    }
+                },
+                {
+                    "name": "set_risk_flag",
+                    "description": "Flag a shipment as high-risk or remove risk flag",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string"},
+                            "is_risk": {"type": "boolean"},
+                            "reason": {"type": "string"}
+                        },
+                        "required": ["identifier", "is_risk"]
+                    }
+                },
+                {
+                    "name": "add_agent_note",
+                    "description": "Add an operational note to a shipment",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string"},
+                            "note": {"type": "string"},
+                            "agent_name": {"type": "string"}
+                        },
+                        "required": ["identifier", "note"]
+                    }
+                },
+                {
+                    "name": "get_server_status",
+                    "description": "Get the current status and health of the MCP server (SAMPLE TOOL from server.py)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "include_details": {
+                                "type": "boolean",
+                                "description": "Whether to include detailed metrics"
+                            }
+                        }
+                    }
+                }
+            ]
+            
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -462,10 +544,13 @@ async def handle_messages(request: Request):
                     },
                     "capabilities": {
                         "tools": {}  # Empty object indicates tools are supported
-                    }
+                    },
+                    # EXPERIMENTAL: Include tools directly (non-standard but might work with 11Labs)
+                    "tools": tools_list
                 }
             }
-            logger.info(f"📤 Sending initialize response: {response}")
+            logger.info(f"📤 Sending initialize response with {len(tools_list)} tools embedded")
+            logger.info(f"📤 Tools: {[t['name'] for t in tools_list]}")
             logger.info("⏳ Expecting client to send: 1) notifications/initialized, then 2) tools/list")
             return JSONResponse(content=response)
         
