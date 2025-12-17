@@ -389,21 +389,91 @@ async def handle_messages(request: Request):
             client_protocol = params.get("protocolVersion", "2024-11-05")
             logger.info(f"✅ Handling initialize request (client protocol: {client_protocol})")
             
+            # Include tools directly in capabilities for newer protocols
+            tools_list = [
+                {
+                    "name": "search_shipments",
+                    "description": "Search and filter shipments by criteria",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "risk_flag": {"type": "boolean", "description": "Filter by risk flag"},
+                            "status_code": {"type": "string", "description": "Filter by status"},
+                            "container_no": {"type": "string", "description": "Filter by container"},
+                            "limit": {"type": "integer", "description": "Maximum results"}
+                        }
+                    }
+                },
+                {
+                    "name": "track_shipment",
+                    "description": "Get detailed tracking information for a shipment",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string", "description": "Job ID, container number, or bill of lading"}
+                        },
+                        "required": ["identifier"]
+                    }
+                },
+                {
+                    "name": "update_shipment_eta",
+                    "description": "Update estimated arrival time for a shipment",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string", "description": "Shipment identifier"},
+                            "new_eta": {"type": "string", "description": "New ETA in ISO format"},
+                            "reason": {"type": "string", "description": "Reason for change"}
+                        },
+                        "required": ["identifier", "new_eta"]
+                    }
+                },
+                {
+                    "name": "set_risk_flag",
+                    "description": "Flag a shipment as high-risk or remove risk flag",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string", "description": "Shipment identifier"},
+                            "is_risk": {"type": "boolean", "description": "Set or remove risk flag"},
+                            "reason": {"type": "string", "description": "Reason for risk flag"}
+                        },
+                        "required": ["identifier", "is_risk"]
+                    }
+                },
+                {
+                    "name": "add_agent_note",
+                    "description": "Add an operational note to a shipment",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string", "description": "Shipment identifier"},
+                            "note": {"type": "string", "description": "Note content"},
+                            "agent_name": {"type": "string", "description": "Agent name"}
+                        },
+                        "required": ["identifier", "note"]
+                    }
+                }
+            ]
+            
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
-                    "protocolVersion": client_protocol,  # Match client's version
+                    "protocolVersion": client_protocol,
                     "serverInfo": {
                         "name": "logistics-orchestrator",
                         "version": "1.0.0"
                     },
                     "capabilities": {
-                        "tools": {}
-                    }
+                        "tools": {
+                            "listChanged": True
+                        }
+                    },
+                    "tools": tools_list  # Include tools directly in initialize response
                 }
             }
-            logger.info(f"📤 Sending initialize response with protocol {client_protocol}")
+            logger.info(f"📤 Sending initialize response with protocol {client_protocol} and {len(tools_list)} tools")
             return JSONResponse(content=response)
         
         # Handle tools/list
