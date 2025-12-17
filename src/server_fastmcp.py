@@ -60,6 +60,8 @@ async def search_shipments(
         async with get_db_context() as session:
             query = select(Shipment)
             
+            logger.info(f"📊 Executing database query...")
+            
             # Apply filters
             if risk_flag is not None:
                 query = query.where(Shipment.risk_flag == risk_flag)
@@ -73,6 +75,8 @@ async def search_shipments(
             query = query.limit(limit)
             result = await session.execute(query)
             shipments = result.scalars().all()
+            
+            logger.info(f"📊 Database returned {len(shipments)} shipments")
             
             shipment_list = [
                 {
@@ -89,6 +93,10 @@ async def search_shipments(
             ]
             
             logger.info(f"✅ Found {len(shipment_list)} shipments")
+            if shipment_list:
+                logger.info(f"✅ First shipment: {shipment_list[0]}")
+            else:
+                logger.warning("⚠️ No shipments found in database!")
             return {
                 "success": True,
                 "count": len(shipment_list),
