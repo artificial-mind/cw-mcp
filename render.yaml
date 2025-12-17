@@ -4,7 +4,7 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && cd src && python quick_seed.py && cd ..
     startCommand: cd src && python server_fastmcp.py
     envVars:
       - key: SERVER_HOST
