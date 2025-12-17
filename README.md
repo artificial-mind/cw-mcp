@@ -48,11 +48,12 @@ pip install -r requirements.txt
 # Initialize database
 python src/seed_database.py
 
-# Run server
+# Run server (entry point)
 python src/server.py
 ```
 
 Server runs on: `http://localhost:8000`
+MCP SSE endpoint: `http://localhost:8000/sse`
 
 ### Test It
 
@@ -114,17 +115,26 @@ cw-ai-server/
 
 ## 🔌 API Endpoints
 
-### Two Connection Types
+### Primary Connection: SSE (Server-Sent Events)
+
+**MCP Protocol via SSE** - The recommended way to connect
+- Persistent connection with real-time updates
+- JSON-RPC 2.0 protocol
+- Used by Claude Desktop, AI agents, MCP clients
+- **Endpoint:** `GET /sse`
+
+### Additional Connection Types
 
 **1. HTTP Webhooks (For 11Labs Voice)**
 - Simple request → response
 - Plain text responses (voice-ready)
 - No streaming
+- **Endpoint:** `POST /webhook`
 
-**2. SSE Streaming (For MCP Clients like Claude)**
-- Persistent connection
+**2. REST JSON-RPC (Alternative)**
+- Standard HTTP POST
 - JSON-RPC 2.0 protocol
-- Real-time events
+- **Endpoint:** `POST /messages`
 
 ### REST Endpoints
 
@@ -132,9 +142,9 @@ cw-ai-server/
 |----------|--------|----------|-------------|
 | `/` | GET | HTTP | Server information |
 | `/health` | GET | HTTP | Health check |
-| `/webhook` | POST | **HTTP** | **11Labs voice webhook (simple JSON)** |
-| `/messages` | POST | JSON-RPC | MCP protocol endpoint |
-| `/sse` | GET | **SSE** | **Server-Sent Events stream (MCP)** |
+| `/sse` | GET | **SSE** | **Primary: Server-Sent Events stream (MCP)** |
+| `/webhook` | POST | HTTP | 11Labs voice webhook (simple JSON) |
+| `/messages` | POST | JSON-RPC | Alternative MCP endpoint |
 
 ### MCP Tools
 

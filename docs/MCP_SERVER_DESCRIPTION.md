@@ -60,12 +60,13 @@ A production-grade **Model Context Protocol (MCP)** server that acts as a univer
 
 ## 🔌 Supported Protocols
 
-### 1. **MCP (Model Context Protocol)** - For AI Agents
-- **Endpoint:** `/sse` (Server-Sent Events)
-- **Protocol:** JSON-RPC 2.0
-- **Transport:** SSE streaming
+### 1. **SSE (Server-Sent Events)** - PRIMARY for MCP Clients
+- **Endpoint:** `/sse`
+- **Protocol:** JSON-RPC 2.0 over SSE
+- **Transport:** Server-Sent Events streaming
 - **Use Case:** Claude Desktop, GPT integrations, MCP-compatible agents
 - **Features:** Real-time updates, persistent connection, standardized tool calling
+- **Status:** ✅ Primary and recommended connection method
 
 ### 2. **HTTP Webhooks** - For Voice Assistants
 - **Endpoint:** `/webhook`
@@ -74,7 +75,7 @@ A production-grade **Model Context Protocol (MCP)** server that acts as a univer
 - **Use Case:** 11Labs, Twilio, custom voice UIs
 - **Features:** Fast response, voice-optimized text, simple integration
 
-### 3. **REST API** - For Traditional Clients
+### 3. **REST API** - Alternative for Traditional Clients
 - **Endpoint:** `/messages`
 - **Protocol:** JSON-RPC 2.0 over HTTP
 - **Transport:** HTTP POST
@@ -376,10 +377,11 @@ pip install -r requirements.txt
 # Initialize database
 python src/seed_database.py
 
-# Run server
-python run.py
+# Run server (entry point)
+python src/server.py
 
 # Server starts at http://localhost:8000
+# MCP SSE endpoint: http://localhost:8000/sse
 ```
 
 ---

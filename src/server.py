@@ -471,15 +471,40 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
+    import sys
+    from pathlib import Path
+    
+    # Ensure proper PYTHONPATH for imports
+    # Add parent directory to path so 'from config import settings' works
+    current_dir = Path(__file__).resolve().parent
+    parent_dir = current_dir.parent
+    if str(current_dir) not in sys.path:
+        sys.path.insert(0, str(current_dir))
     
     logger.info("=" * 60)
     logger.info("LOGISTICS MCP ORCHESTRATOR SERVER")
     logger.info("=" * 60)
+    logger.info(f"MCP Protocol: SSE (Server-Sent Events)")
+    logger.info(f"Primary Endpoint: /sse")
+    logger.info(f"Server: {settings.SERVER_HOST}:{settings.SERVER_PORT}")
+    logger.info("=" * 60)
     
-    uvicorn.run(
-        "server:app",
-        host=settings.SERVER_HOST,
-        port=settings.SERVER_PORT,
-        reload=settings.DEBUG,
-        log_level="debug" if settings.DEBUG else "info"
-    )
+    # For production/non-reload mode: pass app object
+    # For development with reload: pass import string
+    if settings.DEBUG:
+        # Use import string for reload mode
+        uvicorn.run(
+            "server:app",
+            host=settings.SERVER_HOST,
+            port=settings.SERVER_PORT,
+            reload=True,
+            log_level="debug"
+        )
+    else:
+        # Use app object for production
+        uvicorn.run(
+            app,
+            host=settings.SERVER_HOST,
+            port=settings.SERVER_PORT,
+            log_level="info"
+        )
