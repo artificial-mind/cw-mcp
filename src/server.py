@@ -346,6 +346,19 @@ async def handle_elevenlabs_webhook(request: Request):
         return "I encountered an error processing your request. Please try again."
 
 
+@app.options("/messages")
+async def messages_options():
+    """Handle CORS preflight for /messages endpoint"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+        }
+    )
+
+
 @app.post("/messages")
 async def handle_messages(request: Request):
     """
@@ -359,7 +372,14 @@ async def handle_messages(request: Request):
         # Extract method and params
         method = message.get("method")
         params = message.get("params", {})
-        msg_id = message.get("id", 1)
+        msg_id = message.get("id")  # Notifications don't have id
+        
+        # Handle notifications (no response needed)
+        if msg_id is None:
+            logger.info(f"📢 Received notification: {method}")
+            if method == "notifications/initialized":
+                logger.info("✅ Client initialized notification received")
+            return JSONResponse(content={})  # Empty response for notifications
         
         # Handle initialize
         if method == "initialize":
@@ -512,6 +532,10 @@ async def handle_messages(request: Request):
                     "code": -32603,
                     "message": f"Internal error: {str(e)}"
                 }
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*"
             }
         )
 
