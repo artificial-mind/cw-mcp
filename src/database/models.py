@@ -25,6 +25,10 @@ class Shipment(Base):
     vessel_name = Column(String, nullable=True)
     voyage_number = Column(String, nullable=True)
     
+    # Ports
+    origin_port = Column(String, nullable=True)
+    destination_port = Column(String, nullable=True)
+    
     # Status information
     status_code = Column(String, index=True)  # Standardized: IN_TRANSIT, DELAYED, DELIVERED, etc.
     status_description = Column(Text, nullable=True)

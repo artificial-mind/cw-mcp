@@ -20,6 +20,8 @@ SAMPLE_SHIPMENTS = [
         "container_no": "MSCU1234567",
         "vessel_name": "MSC GULSUN",
         "voyage_number": "025W",
+        "origin_port": "Shanghai, China",
+        "destination_port": "Los Angeles, USA",
         "status_code": "IN_TRANSIT",
         "status_description": "Container loaded on vessel, departed from Port of Shanghai",
         "etd": datetime(2025, 12, 10, 8, 0),
