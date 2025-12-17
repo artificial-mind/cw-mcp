@@ -441,7 +441,8 @@ async def handle_messages(request: Request):
         if msg_id is None:
             logger.info(f"📢 Notification received: {method} - no response needed")
             if method == "notifications/initialized":
-                logger.info("✅ Client sent initialized notification")
+                logger.info("✅ Client sent initialized notification - CLIENT IS READY!")
+                logger.info("⏳ Now waiting for client to call tools/list to fetch available tools")
             # Return empty response with 200 status
             return Response(status_code=200, media_type="application/json")
         # Handle initialize
@@ -465,6 +466,7 @@ async def handle_messages(request: Request):
                 }
             }
             logger.info(f"📤 Sending initialize response: {response}")
+            logger.info("⏳ Expecting client to send: 1) notifications/initialized, then 2) tools/list")
             return JSONResponse(content=response)
         
         # Handle tools/list
