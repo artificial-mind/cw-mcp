@@ -29,11 +29,24 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def init_db():
-    """Initialize database tables"""
+    """Initialize database tables only if they don't exist"""
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialized successfully")
+            # Check if tables already exist
+            def check_tables(connection):
+                from sqlalchemy import inspect
+                inspector = inspect(connection)
+                existing_tables = inspector.get_table_names()
+                return 'shipments' in existing_tables
+            
+            has_tables = await conn.run_sync(check_tables)
+            
+            if has_tables:
+                logger.info("Database tables already exist - preserving data")
+            else:
+                logger.info("Creating database tables...")
+                await conn.run_sync(Base.metadata.create_all)
+                logger.info("Database tables created successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
