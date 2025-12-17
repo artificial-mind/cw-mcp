@@ -139,90 +139,104 @@ async def server_info():
 
 
 @app.get("/sse")
+@app.post("/sse")
 async def handle_sse(request: Request):
     """
-    SSE endpoint for MCP protocol - Proper implementation
-    This endpoint streams Server-Sent Events for real-time communication
+    SSE endpoint for MCP protocol using proper MCP SDK transport
+    This is the primary endpoint for MCP clients (11Labs, Claude, etc.)
     """
-    logger.info(f"🔌 New SSE connection from {request.client.host}")
+    from mcp.server.sse import SseServerTransport
+    from mcp.shared.memory import InMemoryStream
     
-    async def event_stream():
-        """Generate SSE events for MCP protocol"""
-        import json
-        
+    logger.info(f"🔌 New SSE connection from {request.client.host} (method: {request.method})")
+    
+    # Handle POST requests for client messages
+    if request.method == "POST":
         try:
-            # Send initialization message
-            init_msg = {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "serverInfo": {
-                        "name": "logistics-orchestrator",
-                        "version": "1.0.0"
-                    },
-                    "capabilities": {
-                        "tools": {}
+            body = await request.json()
+            logger.info(f"📨 Received MCP message: {body}")
+            
+            # Create in-memory streams for this request
+            read_stream = InMemoryStream()
+            write_stream = InMemoryStream()
+            
+            # Write the incoming message to read stream
+            await read_stream.write(body)
+            
+            # Process with MCP server
+            await mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp_server.create_initialization_options()
+            )
+            
+            # Read response from write stream
+            response = await write_stream.read()
+            logger.info(f"📤 Sending MCP response: {response}")
+            
+            return JSONResponse(content=response)
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling POST: {e}", exc_info=True)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32603,
+                        "message": f"Internal error: {str(e)}"
                     }
                 }
-            }
-            logger.info("✅ SSE client connected - sending initialization")
-            yield f"event: message\n"
-            yield f"data: {json.dumps(init_msg)}\n\n"
-            
-            # Send tools list
-            tools_msg = {
-                "jsonrpc": "2.0",
-                "method": "notifications/tools/list_changed",
-                "params": {}
-            }
-            yield f"event: message\n"
-            yield f"data: {json.dumps(tools_msg)}\n\n"
-            
-            # Keep connection alive with periodic pings
-            ping_count = 0
-            while True:
-                await asyncio.sleep(15)  # Ping every 15 seconds
-                
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    logger.info("🔌 SSE client disconnected")
-                    break
-                
-                ping_count += 1
-                ping_msg = {
-                    "type": "ping",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "count": ping_count
-                }
-                yield f"event: ping\n"
-                yield f"data: {json.dumps(ping_msg)}\n\n"
-                logger.debug(f"📡 Sent ping #{ping_count}")
-                
-        except asyncio.CancelledError:
-            logger.info("🔌 SSE connection cancelled by client")
-        except Exception as e:
-            logger.error(f"❌ SSE error: {e}", exc_info=True)
-            error_msg = {
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32603,
-                    "message": f"Internal server error: {str(e)}"
-                }
-            }
-            yield f"event: error\n"
-            yield f"data: {json.dumps(error_msg)}\n\n"
+            )
     
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
+    # Handle GET for SSE stream
+    else:
+        async def event_generator():
+            """Generate SSE events for MCP protocol"""
+            import json
+            
+            try:
+                # Send endpoint message (MCP spec)
+                endpoint_msg = {
+                    "jsonrpc": "2.0",
+                    "method": "endpoint",
+                    "params": {
+                        "uri": str(request.url).replace("/sse", "/messages")
+                    }
+                }
+                yield f"event: endpoint\n"
+                yield f"data: {json.dumps(endpoint_msg)}\n\n"
+                
+                logger.info("✅ SSE stream established, sent endpoint")
+                
+                # Keep connection alive
+                while True:
+                    await asyncio.sleep(30)
+                    
+                    if await request.is_disconnected():
+                        logger.info("🔌 SSE client disconnected")
+                        break
+                    
+                    # Send ping to keep alive
+                    yield f": ping\n\n"
+                    
+            except asyncio.CancelledError:
+                logger.info("🔌 SSE connection cancelled")
+            except Exception as e:
+                logger.error(f"❌ SSE error: {e}", exc_info=True)
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+            }
+        )
 
 
 def format_for_voice(result: dict, tool_name: str) -> str:
