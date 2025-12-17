@@ -398,14 +398,11 @@ async def handle_messages(request: Request):
                         "version": "1.0.0"
                     },
                     "capabilities": {
-                        "tools": {
-                            "listChanged": True
-                        }
+                        "tools": {}  # Empty object indicates tools are supported
                     }
                 }
             }
-            logger.info(f"📤 Sending initialize response with protocol {client_protocol}")
-            logger.info(f"💡 Client should now call tools/list to get 5 available tools")
+            logger.info(f"📤 Sending initialize response: {response}")
             return JSONResponse(content=response)
         
         # Handle tools/list
