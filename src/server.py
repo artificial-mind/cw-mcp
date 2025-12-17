@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from mcp.server import Server
@@ -367,24 +367,26 @@ async def handle_messages(request: Request):
     """
     try:
         message = await request.json()
-        logger.info(f"📨 Received MCP message: {message}")
+        logger.info(f"📨 Received MCP message: method={message.get('method')}, id={message.get('id')}")
+        logger.debug(f"Full message: {message}")
         
         # Extract method and params
         method = message.get("method")
         params = message.get("params", {})
         msg_id = message.get("id")  # Notifications don't have id
         
-        # Handle notifications (no response needed)
+        # Handle notifications (no response needed, just return 200 OK)
         if msg_id is None:
-            logger.info(f"📢 Received notification: {method}")
+            logger.info(f"📢 Notification received: {method} - no response needed")
             if method == "notifications/initialized":
-                logger.info("✅ Client initialized notification received")
-            return JSONResponse(content={})  # Empty response for notifications
+                logger.info("✅ Client sent initialized notification")
+            # Return empty response with 200 status
+            return Response(status_code=200, media_type="application/json")
         
         # Handle initialize
         if method == "initialize":
             logger.info("✅ Handling initialize request")
-            return JSONResponse(content={
+            response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
@@ -397,12 +399,14 @@ async def handle_messages(request: Request):
                         "tools": {}
                     }
                 }
-            })
+            }
+            logger.info(f"📤 Sending initialize response")
+            return JSONResponse(content=response)
         
         # Handle tools/list
         elif method == "tools/list":
-            logger.info("✅ Handling tools/list request")
-            return JSONResponse(content={
+            logger.info("🔧 Handling tools/list request")
+            tools_response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
@@ -473,7 +477,9 @@ async def handle_messages(request: Request):
                         }
                     ]
                 }
-            })
+            }
+            logger.info(f"📤 Sending tools/list response with {len(tools_response['result']['tools'])} tools")
+            return JSONResponse(content=tools_response)
         
         # Handle tools/call
         elif method == "tools/call":
