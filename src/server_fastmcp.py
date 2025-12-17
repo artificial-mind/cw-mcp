@@ -80,7 +80,7 @@ async def search_shipments(
             
             shipment_list = [
                 {
-                    "job_id": s.job_id,
+                    "id": s.id,
                     "container_no": s.container_no,
                     "master_bill": s.master_bill,
                     "status": s.status_code,
@@ -127,7 +127,7 @@ async def track_shipment(identifier: str) -> dict:
     try:
         async with get_db_context() as session:
             query = select(Shipment).where(
-                (Shipment.job_id == identifier) |
+                (Shipment.id == identifier) |
                 (Shipment.container_no == identifier) |
                 (Shipment.master_bill == identifier)
             )
@@ -144,7 +144,7 @@ async def track_shipment(identifier: str) -> dict:
             tracking_data = {
                 "success": True,
                 "shipment": {
-                    "job_id": shipment.job_id,
+                    "id": shipment.id,
                     "container_no": shipment.container_no,
                     "master_bill": shipment.master_bill,
                     "status": shipment.status_code,
@@ -158,7 +158,7 @@ async def track_shipment(identifier: str) -> dict:
                 }
             }
             
-            logger.info(f"✅ Shipment tracked: {shipment.job_id}")
+            logger.info(f"✅ Shipment tracked: {shipment.id}")
             return tracking_data
     
     except Exception as e:
@@ -194,7 +194,7 @@ async def update_shipment_eta(
         
         async with get_db_context() as session:
             query = select(Shipment).where(
-                (Shipment.job_id == identifier) |
+                (Shipment.id == identifier) |
                 (Shipment.container_no == identifier) |
                 (Shipment.master_bill == identifier)
             )
@@ -225,10 +225,10 @@ async def update_shipment_eta(
             
             await session.commit()
             
-            logger.info(f"✅ ETA updated for {shipment.job_id}")
+            logger.info(f"✅ ETA updated for {shipment.id}")
             return {
                 "success": True,
-                "message": f"ETA updated for {shipment.job_id}",
+                "message": f"ETA updated for {shipment.id}",
                 "old_eta": old_eta.isoformat() if old_eta else None,
                 "new_eta": new_eta_dt.isoformat()
             }
@@ -263,7 +263,7 @@ async def set_risk_flag(
     try:
         async with get_db_context() as session:
             query = select(Shipment).where(
-                (Shipment.job_id == identifier) |
+                (Shipment.id == identifier) |
                 (Shipment.container_no == identifier) |
                 (Shipment.master_bill == identifier)
             )
@@ -293,10 +293,10 @@ async def set_risk_flag(
             
             await session.commit()
             
-            logger.info(f"✅ Risk flag updated for {shipment.job_id}")
+            logger.info(f"✅ Risk flag updated for {shipment.id}")
             return {
                 "success": True,
-                "message": f"Risk flag {'set' if is_risk else 'cleared'} for {shipment.job_id}",
+                "message": f"Risk flag {'set' if is_risk else 'cleared'} for {shipment.id}",
                 "risk_flag": is_risk
             }
     
@@ -330,7 +330,7 @@ async def add_agent_note(
     try:
         async with get_db_context() as session:
             query = select(Shipment).where(
-                (Shipment.job_id == identifier) |
+                (Shipment.id == identifier) |
                 (Shipment.container_no == identifier) |
                 (Shipment.master_bill == identifier)
             )
@@ -358,10 +358,10 @@ async def add_agent_note(
             
             await session.commit()
             
-            logger.info(f"✅ Note added to {shipment.job_id}")
+            logger.info(f"✅ Note added to {shipment.id}")
             return {
                 "success": True,
-                "message": f"Note added to {shipment.job_id}"
+                "message": f"Note added to {shipment.id}"
             }
     
     except Exception as e:
