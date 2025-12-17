@@ -78,7 +78,60 @@ mcp_server = Server("logistics-orchestrator")
 # Register tools
 logistics_tools = LogisticsTools(mcp_server)
 
-logger.info("✅ MCP tools registered")
+
+# Add a sample tool directly in server.py
+@mcp_server.list_tools()
+async def list_server_tools() -> list:
+    """List available tools - sample tool in server.py"""
+    from mcp.types import Tool
+    return [
+        Tool(
+            name="get_server_status",
+            description="Get the current status and health of the MCP server",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "include_details": {
+                        "type": "boolean",
+                        "description": "Whether to include detailed metrics"
+                    }
+                }
+            }
+        )
+    ]
+
+
+@mcp_server.call_tool()
+async def call_server_tool(name: str, arguments: dict) -> list:
+    """Handle tool calls - sample tool in server.py"""
+    from mcp.types import TextContent
+    
+    if name == "get_server_status":
+        include_details = arguments.get("include_details", False)
+        
+        status = {
+            "status": "healthy",
+            "server": "logistics-orchestrator",
+            "version": "1.0.0",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if include_details:
+            status["details"] = {
+                "tools_registered": 6,  # 5 logistics + 1 server status
+                "database": "connected",
+                "uptime": "running"
+            }
+        
+        return [TextContent(
+            type="text",
+            text=f"Server Status: {status}"
+        )]
+    
+    raise ValueError(f"Unknown tool: {name}")
+
+
+logger.info("✅ MCP tools registered (including server.py sample tool)")
 
 
 @app.get("/")
@@ -370,8 +423,13 @@ async def handle_messages(request: Request):
     Used by MCP clients and AI agents
     """
     try:
+        # Log raw request details first
+        logger.info(f"🔵 POST /messages received from {request.client.host if request.client else 'unknown'}")
+        logger.info(f"🔵 Headers: {dict(request.headers)}")
+        
         message = await request.json()
         logger.info(f"📨 Received MCP message: method={message.get('method')}, id={message.get('id')}")
+        logger.info(f"📨 Full message payload: {message}")
         logger.debug(f"Full message: {message}")
         
         # Extract method and params
@@ -412,6 +470,7 @@ async def handle_messages(request: Request):
         # Handle tools/list
         elif method == "tools/list":
             logger.info("🔧 Handling tools/list request")
+            logger.info(f"🔧 Client wants to fetch available tools (message id: {msg_id})")
             tools_response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -480,11 +539,25 @@ async def handle_messages(request: Request):
                                 },
                                 "required": ["identifier", "note"]
                             }
+                        },
+                        {
+                            "name": "get_server_status",
+                            "description": "Get the current status and health of the MCP server (SAMPLE TOOL from server.py)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "include_details": {
+                                        "type": "boolean",
+                                        "description": "Whether to include detailed metrics"
+                                    }
+                                }
+                            }
                         }
                     ]
                 }
             }
             logger.info(f"📤 Sending tools/list response with {len(tools_response['result']['tools'])} tools")
+            logger.info(f"📤 Tools being sent: {[t['name'] for t in tools_response['result']['tools']]}")
             return JSONResponse(content=tools_response)
         
         # Handle tools/call
@@ -507,6 +580,21 @@ async def handle_messages(request: Request):
                 result = await tools_obj.add_agent_note(**arguments)
             elif tool_name == "search_shipments":
                 result = await tools_obj.search_shipments(**arguments)
+            elif tool_name == "get_server_status":
+                # Handle the sample tool from server.py
+                include_details = arguments.get("include_details", False)
+                result = {
+                    "status": "healthy",
+                    "server": "logistics-orchestrator",
+                    "version": "1.0.0",
+                    "timestamp": datetime.now().isoformat()
+                }
+                if include_details:
+                    result["details"] = {
+                        "tools_registered": 6,
+                        "database": "connected",
+                        "uptime": "running"
+                    }
             else:
                 result = {"error": f"Unknown tool: {tool_name}"}
             
@@ -527,6 +615,7 @@ async def handle_messages(request: Request):
         
         else:
             logger.warning(f"⚠️ Unknown method: {method}")
+            logger.warning(f"⚠️ Full unknown message: {message}")
             return JSONResponse(content={
                 "jsonrpc": "2.0",
                 "id": msg_id,
