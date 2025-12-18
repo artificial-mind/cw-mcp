@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./logistics.db"
+    # Use /tmp for Render deployment (filesystem is read-only except /tmp)
+    DATABASE_URL: str = "sqlite+aiosqlite:////tmp/logistics.db"
     
     # External APIs (Placeholders)
     LOGITUDE_API_URL: str = "https://api.logitude.com"

@@ -27,10 +27,27 @@ mcp = FastMCP(
     version="1.0.0"
 )
 
-# Initialize database schema if needed (creates tables but preserves existing data)
+# Initialize database schema and seed if empty
 import asyncio
-asyncio.run(init_db())
-logger.info("✅ Database ready (static logistics.db with sample data)")
+
+async def setup_database():
+    """Initialize database and seed if necessary"""
+    await init_db()
+    logger.info("✅ Database initialized")
+    
+    # Check if database needs seeding
+    async with get_db_context() as session:
+        result = await session.execute(select(Shipment).limit(1))
+        existing = result.scalar_one_or_none()
+        
+        if not existing:
+            logger.info("📦 Database is empty - importing seed data...")
+            from quick_seed import quick_seed
+            await quick_seed()
+        else:
+            logger.info(f"✅ Database ready with existing data (found shipment: {existing.id})")
+
+asyncio.run(setup_database())
 
 
 @mcp.tool()

@@ -239,16 +239,19 @@ DEBUG=false
 
 ## 🔐 Environment Variables
 
-Create `.env` file:
+Create `.env` file for local development:
 
 ```bash
 # Server
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8000
-DEBUG=false
+DEBUG=true
 
-# Database
-DATABASE_URL=sqlite:///logistics.db
+# Database (local development uses current directory)
+DATABASE_URL=sqlite+aiosqlite:///./logistics.db
+
+# Database (Render production - must use /tmp)
+# DATABASE_URL=sqlite+aiosqlite:////tmp/logistics.db
 
 # API Keys (optional)
 LOGITUDE_API_KEY=your-key
@@ -258,6 +261,11 @@ TRACKING_API_KEY=your-key
 # Authentication
 API_KEY=your-secure-key
 ```
+
+**Note for Render Deployment:**
+- Production must use `/tmp/logistics.db` (Render's free tier only allows writes to `/tmp`)
+- Database is automatically created and seeded on startup
+- Data is ephemeral and recreated on each deployment
 
 ## 📊 Architecture
 

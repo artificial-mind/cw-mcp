@@ -53,22 +53,29 @@ Deploy **ONLY** these files to Render:
 | **Name** | `logistics-mcp-server` |
 | **Environment** | `Python 3` |
 | **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `python server.py` |
-| **Port** | `8000` (auto-detected by Render) |
+| **Start Command** | `cd src && python server_fastmcp.py` |
+| **Port** | Automatically assigned by Render |
 
 ### Environment Variables:
 
 ```bash
 # Required
 SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
+SERVER_PORT=$PORT  # Render automatically sets this
 DEBUG=false
 
-# Optional (defaults in config.py)
-DATABASE_URL=sqlite:///logistics.db
+# Database (must use /tmp on Render free tier)
+DATABASE_URL=sqlite+aiosqlite:////tmp/logistics.db
+
+# Optional
 API_KEY=your-secure-api-key-here
 LOG_LEVEL=INFO
 ```
+
+### Important Notes:
+- **Database Location:** Must be `/tmp/logistics.db` (Render's free tier only allows writes to `/tmp`)
+- **Data Persistence:** Database is recreated on each deployment with sample data
+- **Auto-seeding:** Server automatically initializes and seeds the database on startup
 
 ---
 

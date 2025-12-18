@@ -4,7 +4,7 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt && cd src && python quick_seed.py && cd ..
+    buildCommand: pip install -r requirements.txt
     startCommand: cd src && python server_fastmcp.py
     envVars:
       - key: SERVER_HOST
@@ -15,4 +15,4 @@ services:
       - key: DEBUG
         value: false
       - key: DATABASE_URL
-        value: sqlite:///logistics.db
+        value: sqlite+aiosqlite:////tmp/logistics.db

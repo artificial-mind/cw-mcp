@@ -6,11 +6,18 @@ from sqlalchemy.pool import StaticPool
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 import logging
+import os
+from pathlib import Path
 
 from config import settings
 from .models import Base
 
 logger = logging.getLogger(__name__)
+
+# Ensure /tmp directory exists (for Render deployment)
+if "/tmp/" in settings.DATABASE_URL:
+    os.makedirs("/tmp", exist_ok=True)
+    logger.info("Ensured /tmp directory exists for database")
 
 # Create async engine
 engine = create_async_engine(
