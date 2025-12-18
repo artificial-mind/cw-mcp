@@ -1,497 +1,866 @@
 """
 MCP Tools for Logistics Orchestrator
-These tools are exposed to AI agents via the MCP protocol
+All tool implementations for the FastMCP server
 """
 import logging
-from typing import Any, Dict, Optional, List
-from datetime import datetime
-
-from mcp.server import Server
-from mcp.types import Tool, TextContent
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
 
 from database.database import get_db_context
-from database.crud import ShipmentCRUD, AuditLogCRUD
-from adapters import LogitudeAdapter, DPWorldAdapter, TrackingAPIAdapter, AdapterError
+from database.models import Shipment
+from sqlalchemy import select, func, or_, and_
 
 logger = logging.getLogger(__name__)
 
 
-class LogisticsTools:
-    """Container for all logistics MCP tools"""
+# ============================================================================
+# BASIC SEARCH & TRACKING TOOLS
+# ============================================================================
+
+async def search_shipments(
+    risk_flag: Optional[bool] = None,
+    status_code: Optional[str] = None,
+    container_no: Optional[str] = None,
+    master_bill: Optional[str] = None,
+    limit: int = 10
+) -> dict:
+    """
+    Search and filter shipments by various criteria.
     
-    def __init__(self, server: Server):
-        self.server = server
-        self._register_tools()
+    Args:
+        risk_flag: Filter by risk status (true/false)
+        status_code: Filter by status code (e.g., 'IN_TRANSIT', 'DELIVERED')
+        container_no: Filter by container number
+        master_bill: Filter by master bill of lading number
+        limit: Maximum number of results to return
     
-    def _register_tools(self):
-        """Register all tools with the MCP server"""
-        
-        # Tool 1: Track Shipment
-        @self.server.list_tools()
-        async def list_tools() -> list[Tool]:
-            return [
-                Tool(
-                    name="track_shipment",
-                    description=(
-                        "Fetch comprehensive shipment data by tracking number, container number, or "
-                        "master bill of lading. Returns standardized tracking information including "
-                        "vessel details, location, schedule, and status. Data is fetched from both "
-                        "external APIs (Logitude, DP World) and local cache with risk flags and agent notes."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "identifier": {
-                                "type": "string",
-                                "description": "Shipment ID, container number, or master bill of lading"
-                            },
-                            "source": {
-                                "type": "string",
-                                "enum": ["local", "logitude", "dpworld", "tracking"],
-                                "description": "Data source to query (default: local)",
-                                "default": "local"
-                            }
-                        },
-                        "required": ["identifier"]
-                    }
-                ),
-                Tool(
-                    name="update_shipment_eta",
-                    description=(
-                        "Update the Estimated Time of Arrival (ETA) for a shipment. Implements dual-write "
-                        "pattern: updates both local database and attempts to push to external API (Logitude). "
-                        "Creates audit log with reasoning. Use this when vessel delays or schedule changes occur."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "shipment_id": {
-                                "type": "string",
-                                "description": "The shipment ID to update"
-                            },
-                            "new_eta": {
-                                "type": "string",
-                                "description": "New ETA in ISO 8601 format (e.g., '2025-12-25T14:30:00')"
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "Explanation for the ETA change (e.g., 'Weather delay in Suez Canal')"
-                            }
-                        },
-                        "required": ["shipment_id", "new_eta", "reason"]
-                    }
-                ),
-                Tool(
-                    name="set_risk_flag",
-                    description=(
-                        "Flag a shipment as high-risk or remove the risk flag. Risk flags help prioritize "
-                        "shipments that need attention (e.g., major delays, angry customers, customs issues). "
-                        "This field is stored locally and not synced to external APIs."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "shipment_id": {
-                                "type": "string",
-                                "description": "The shipment ID to flag"
-                            },
-                            "is_risk": {
-                                "type": "boolean",
-                                "description": "True to flag as risk, False to remove flag"
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "Why this shipment is flagged (e.g., 'Customer escalation due to delay')"
-                            }
-                        },
-                        "required": ["shipment_id", "is_risk", "reason"]
-                    }
-                ),
-                Tool(
-                    name="add_agent_note",
-                    description=(
-                        "Add or update agent notes for a shipment. Use this to record important observations, "
-                        "customer communications, or action items that don't fit into structured fields. "
-                        "Notes are stored locally and persist across queries."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "shipment_id": {
-                                "type": "string",
-                                "description": "The shipment ID to add notes to"
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "The note text to add or append"
-                            },
-                            "append": {
-                                "type": "boolean",
-                                "description": "If true, append to existing notes. If false, replace (default: true)",
-                                "default": True
-                            }
-                        },
-                        "required": ["shipment_id", "note"]
-                    }
-                ),
-                Tool(
-                    name="search_shipments",
-                    description=(
-                        "Search for shipments using flexible filters. Can search by container number, "
-                        "master bill, status code, or risk flag. Returns list of matching shipments in "
-                        "standard format. Useful for finding all delayed shipments, risky cargo, etc."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "container_no": {
-                                "type": "string",
-                                "description": "Filter by container number (partial match supported)"
-                            },
-                            "master_bill": {
-                                "type": "string",
-                                "description": "Filter by master bill of lading (partial match supported)"
-                            },
-                            "status_code": {
-                                "type": "string",
-                                "enum": ["BOOKED", "IN_TRANSIT", "AT_PORT", "CUSTOMS_HOLD", "DELIVERED", "DELAYED"],
-                                "description": "Filter by status code"
-                            },
-                            "risk_flag": {
-                                "type": "boolean",
-                                "description": "Filter by risk flag (true = only risky, false = only safe)"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results (default: 50)",
-                                "default": 50,
-                                "minimum": 1,
-                                "maximum": 200
-                            }
-                        }
-                    }
-                )
+    Returns:
+        Dictionary with shipment results and count
+    """
+    logger.info(f"🔍 Searching shipments: risk={risk_flag}, status={status_code}, container={container_no}, bill={master_bill}, limit={limit}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            # Apply filters
+            if risk_flag is not None:
+                query = query.where(Shipment.risk_flag == risk_flag)
+            if status_code:
+                query = query.where(Shipment.status_code == status_code)
+            if container_no:
+                query = query.where(Shipment.container_no.like(f"%{container_no}%"))
+            if master_bill:
+                query = query.where(Shipment.master_bill.like(f"%{master_bill}%"))
+            
+            query = query.limit(limit)
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            shipment_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "master_bill": s.master_bill,
+                    "status": s.status_code,
+                    "risk_flag": s.risk_flag,
+                    "origin": s.origin_port,
+                    "destination": s.destination_port,
+                    "eta": s.eta.isoformat() if s.eta else None
+                }
+                for s in shipments
             ]
-        
-        # Tool implementations
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-            """Route tool calls to appropriate handlers"""
-            try:
-                if name == "track_shipment":
-                    result = await self.track_shipment(**arguments)
-                elif name == "update_shipment_eta":
-                    result = await self.update_shipment_eta(**arguments)
-                elif name == "set_risk_flag":
-                    result = await self.set_risk_flag(**arguments)
-                elif name == "add_agent_note":
-                    result = await self.add_agent_note(**arguments)
-                elif name == "search_shipments":
-                    result = await self.search_shipments(**arguments)
-                else:
-                    result = {"error": f"Unknown tool: {name}"}
-                
-                import json
-                return [TextContent(
-                    type="text",
-                    text=json.dumps(result, indent=2, default=str)
-                )]
             
-            except Exception as e:
-                logger.error(f"Error executing tool {name}: {e}", exc_info=True)
-                import json
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "error": str(e),
-                        "tool": name,
-                        "status": "failed"
-                    }, indent=2)
-                )]
-    
-    async def track_shipment(
-        self,
-        identifier: str,
-        source: str = "local"
-    ) -> Dict[str, Any]:
-        """Fetch shipment data from specified source"""
-        
-        logger.info(f"Tracking shipment {identifier} from source: {source}")
-        
-        try:
-            if source == "local":
-                # Query local database
-                async with get_db_context() as db:
-                    # Try to find by ID first
-                    shipment = await ShipmentCRUD.get_by_id(db, identifier)
-                    
-                    # If not found, try container number
-                    if not shipment:
-                        shipment = await ShipmentCRUD.get_by_container(db, identifier)
-                    
-                    # If not found, try master bill
-                    if not shipment:
-                        shipment = await ShipmentCRUD.get_by_master_bill(db, identifier)
-                    
-                    if not shipment:
-                        return {
-                            "error": f"Shipment {identifier} not found in local database",
-                            "suggestion": "Try using source='logitude' or 'dpworld' to query external APIs"
-                        }
-                    
-                    return {
-                        "success": True,
-                        "source": "local",
-                        "data": shipment.to_standard_format()
-                    }
-            
-            elif source == "logitude":
-                async with LogitudeAdapter() as adapter:
-                    data = await adapter.fetch_shipment(identifier)
-                    return {
-                        "success": True,
-                        "source": "logitude",
-                        "data": data
-                    }
-            
-            elif source == "dpworld":
-                async with DPWorldAdapter() as adapter:
-                    data = await adapter.fetch_shipment(identifier)
-                    return {
-                        "success": True,
-                        "source": "dpworld",
-                        "data": data
-                    }
-            
-            elif source == "tracking":
-                async with TrackingAPIAdapter() as adapter:
-                    data = await adapter.fetch_shipment(identifier)
-                    return {
-                        "success": True,
-                        "source": "tracking",
-                        "data": data
-                    }
-            
-            else:
-                return {"error": f"Unknown source: {source}"}
-        
-        except AdapterError as e:
+            logger.info(f"✅ Found {len(shipment_list)} shipments")
             return {
-                "error": f"External API error: {e.message}",
-                "vendor": e.vendor,
-                "fallback": "Try querying local database with source='local'"
+                "success": True,
+                "count": len(shipment_list),
+                "results": shipment_list
             }
-        except Exception as e:
-            logger.error(f"Unexpected error in track_shipment: {e}", exc_info=True)
-            return {"error": str(e)}
     
-    async def update_shipment_eta(
-        self,
-        shipment_id: str,
-        new_eta: str,
-        reason: str
-    ) -> Dict[str, Any]:
-        """Update ETA with dual-write pattern"""
-        
-        logger.info(f"Updating ETA for {shipment_id} to {new_eta}")
-        
-        try:
-            # Parse new ETA
-            try:
-                eta_dt = datetime.fromisoformat(new_eta.replace('Z', '+00:00'))
-            except ValueError:
-                return {"error": "Invalid ETA format. Use ISO 8601 (e.g., '2025-12-25T14:30:00')"}
+    except Exception as e:
+        logger.error(f"❌ Error searching shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def track_shipment(identifier: str) -> dict:
+    """
+    Get detailed tracking information for a specific shipment.
+    
+    Args:
+        identifier: Job ID, container number, or bill of lading number
+    
+    Returns:
+        Detailed shipment tracking information
+    """
+    logger.info(f"📦 Tracking shipment: {identifier}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment).where(
+                (Shipment.id == identifier) |
+                (Shipment.container_no == identifier) |
+                (Shipment.master_bill == identifier)
+            )
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
             
-            async with get_db_context() as db:
-                # Get current shipment
-                shipment = await ShipmentCRUD.get_by_id(db, shipment_id)
-                if not shipment:
-                    return {"error": f"Shipment {shipment_id} not found"}
-                
-                old_eta = shipment.eta
-                
-                # Attempt external API update (with retry logic in adapter)
-                external_success = False
-                external_error = None
-                
-                try:
-                    async with LogitudeAdapter() as adapter:
-                        external_success = await adapter.update_shipment(
-                            shipment_id,
-                            {"eta": new_eta}
-                        )
-                except Exception as e:
-                    external_error = str(e)
-                    logger.warning(f"External API update failed: {e}")
-                
-                # Update local database regardless of external API result
-                await ShipmentCRUD.update(db, shipment_id, {"eta": eta_dt})
-                
-                # Create audit log
-                await AuditLogCRUD.create(
-                    db,
-                    shipment_id=shipment_id,
-                    action="UPDATE_ETA",
-                    reason=reason,
-                    field_name="eta",
-                    old_value=old_eta.isoformat() if old_eta else None,
-                    new_value=new_eta,
-                    agent_id="ai-agent"
-                )
-                
-                await db.commit()
-                
+            if not shipment:
+                logger.warning(f"⚠️ Shipment not found: {identifier}")
                 return {
-                    "success": True,
-                    "shipment_id": shipment_id,
-                    "old_eta": old_eta.isoformat() if old_eta else None,
-                    "new_eta": new_eta,
-                    "local_update": "success",
-                    "external_update": "success" if external_success else "failed",
-                    "external_error": external_error,
-                    "note": "ETA updated in local database" + (
-                        " and external API" if external_success else " but external API update failed"
+                    "success": False,
+                    "error": f"Shipment not found: {identifier}"
+                }
+            
+            tracking_data = {
+                "success": True,
+                "shipment": {
+                    "id": shipment.id,
+                    "container_no": shipment.container_no,
+                    "master_bill": shipment.master_bill,
+                    "status": shipment.status_code,
+                    "risk_flag": shipment.risk_flag,
+                    "origin": shipment.origin_port,
+                    "destination": shipment.destination_port,
+                    "eta": shipment.eta.isoformat() if shipment.eta else None,
+                    "vessel": shipment.vessel_name,
+                    "voyage": shipment.voyage_number,
+                    "notes": shipment.notes or []
+                }
+            }
+            
+            logger.info(f"✅ Shipment tracked: {shipment.id}")
+            return tracking_data
+    
+    except Exception as e:
+        logger.error(f"❌ Error tracking shipment: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# SHIPMENT UPDATE TOOLS
+# ============================================================================
+
+async def update_shipment_eta(
+    identifier: str,
+    new_eta: str,
+    reason: Optional[str] = None
+) -> dict:
+    """
+    Update the estimated arrival time for a shipment.
+    
+    Args:
+        identifier: Job ID, container number, or bill of lading
+        new_eta: New ETA in ISO format (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)
+        reason: Optional reason for the ETA change
+    
+    Returns:
+        Success status and updated shipment info
+    """
+    logger.info(f"⏰ Updating ETA for {identifier} to {new_eta}")
+    
+    try:
+        from dateutil.parser import parse
+        new_eta_dt = parse(new_eta)
+        
+        async with get_db_context() as session:
+            query = select(Shipment).where(
+                (Shipment.id == identifier) |
+                (Shipment.container_no == identifier) |
+                (Shipment.master_bill == identifier)
+            )
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                return {
+                    "success": False,
+                    "error": f"Shipment not found: {identifier}"
+                }
+            
+            old_eta = shipment.eta
+            shipment.eta = new_eta_dt
+            shipment.updated_at = datetime.utcnow()
+            
+            # Add note about ETA change
+            notes = shipment.notes or []
+            note_text = f"ETA updated from {old_eta} to {new_eta_dt}"
+            if reason:
+                note_text += f". Reason: {reason}"
+            notes.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "note": note_text,
+                "type": "eta_update"
+            })
+            shipment.notes = notes
+            
+            await session.commit()
+            
+            logger.info(f"✅ ETA updated for {shipment.id}")
+            return {
+                "success": True,
+                "message": f"ETA updated for {shipment.id}",
+                "old_eta": old_eta.isoformat() if old_eta else None,
+                "new_eta": new_eta_dt.isoformat()
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error updating ETA: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def set_risk_flag(
+    identifier: str,
+    is_risk: bool,
+    reason: Optional[str] = None
+) -> dict:
+    """
+    Flag a shipment as high-risk or remove the risk flag.
+    
+    Args:
+        identifier: Job ID, container number, or bill of lading
+        is_risk: True to flag as risk, False to clear risk flag
+        reason: Optional reason for the risk flag change
+    
+    Returns:
+        Success status and updated shipment info
+    """
+    logger.info(f"🚨 Setting risk flag for {identifier} to {is_risk}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment).where(
+                (Shipment.id == identifier) |
+                (Shipment.container_no == identifier) |
+                (Shipment.master_bill == identifier)
+            )
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                return {
+                    "success": False,
+                    "error": f"Shipment not found: {identifier}"
+                }
+            
+            shipment.risk_flag = is_risk
+            shipment.updated_at = datetime.utcnow()
+            
+            # Add note about risk flag change
+            notes = shipment.notes or []
+            note_text = f"Risk flag {'SET' if is_risk else 'CLEARED'}"
+            if reason:
+                note_text += f". Reason: {reason}"
+            notes.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "note": note_text,
+                "type": "risk_update"
+            })
+            shipment.notes = notes
+            
+            await session.commit()
+            
+            logger.info(f"✅ Risk flag updated for {shipment.id}")
+            return {
+                "success": True,
+                "message": f"Risk flag {'set' if is_risk else 'cleared'} for {shipment.id}",
+                "risk_flag": is_risk
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error setting risk flag: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def add_agent_note(
+    identifier: str,
+    note: str,
+    agent_name: Optional[str] = None
+) -> dict:
+    """
+    Add an operational note to a shipment record.
+    
+    Args:
+        identifier: Job ID, container number, or bill of lading
+        note: The note text to add
+        agent_name: Optional name of the agent adding the note
+    
+    Returns:
+        Success status
+    """
+    logger.info(f"📝 Adding note to {identifier}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment).where(
+                (Shipment.id == identifier) |
+                (Shipment.container_no == identifier) |
+                (Shipment.master_bill == identifier)
+            )
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                return {
+                    "success": False,
+                    "error": f"Shipment not found: {identifier}"
+                }
+            
+            notes = shipment.notes or []
+            new_note = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "note": note,
+                "type": "agent_note"
+            }
+            if agent_name:
+                new_note["agent"] = agent_name
+            
+            notes.append(new_note)
+            shipment.notes = notes
+            shipment.updated_at = datetime.utcnow()
+            
+            await session.commit()
+            
+            logger.info(f"✅ Note added to {shipment.id}")
+            return {
+                "success": True,
+                "message": f"Note added to {shipment.id}"
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error adding note: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# ADVANCED SEARCH TOOLS
+# ============================================================================
+
+async def search_shipments_advanced(
+    vessel_name: Optional[str] = None,
+    voyage_number: Optional[str] = None,
+    origin_port: Optional[str] = None,
+    destination_port: Optional[str] = None,
+    status_codes: Optional[List[str]] = None,
+    risk_flag: Optional[bool] = None,
+    eta_from: Optional[str] = None,
+    eta_to: Optional[str] = None,
+    current_location: Optional[str] = None,
+    limit: int = 20
+) -> dict:
+    """
+    Advanced search with multiple filters for shipments. Supports complex queries.
+    
+    Args:
+        vessel_name: Filter by vessel name (partial match)
+        voyage_number: Filter by voyage number (partial match)
+        origin_port: Filter by origin port (partial match)
+        destination_port: Filter by destination port (partial match)
+        status_codes: List of status codes to filter by (e.g., ['IN_TRANSIT', 'DELAYED'])
+        risk_flag: Filter by risk status (true/false)
+        eta_from: Filter shipments arriving after this date (YYYY-MM-DD)
+        eta_to: Filter shipments arriving before this date (YYYY-MM-DD)
+        current_location: Filter by current location (partial match)
+        limit: Maximum number of results (default 20)
+    
+    Returns:
+        Dictionary with filtered shipment results
+    """
+    logger.info(f"🔍 Advanced search: vessel={vessel_name}, voyage={voyage_number}, origin={origin_port}, dest={destination_port}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            # Apply filters
+            if vessel_name:
+                query = query.where(Shipment.vessel_name.like(f"%{vessel_name}%"))
+            if voyage_number:
+                query = query.where(Shipment.voyage_number.like(f"%{voyage_number}%"))
+            if origin_port:
+                query = query.where(Shipment.origin_port.like(f"%{origin_port}%"))
+            if destination_port:
+                query = query.where(Shipment.destination_port.like(f"%{destination_port}%"))
+            if status_codes:
+                query = query.where(Shipment.status_code.in_(status_codes))
+            if risk_flag is not None:
+                query = query.where(Shipment.risk_flag == risk_flag)
+            if current_location:
+                query = query.where(Shipment.current_location.like(f"%{current_location}%"))
+            
+            # Date range filters
+            if eta_from:
+                from dateutil.parser import parse
+                eta_from_dt = parse(eta_from)
+                query = query.where(Shipment.eta >= eta_from_dt)
+            if eta_to:
+                from dateutil.parser import parse
+                eta_to_dt = parse(eta_to)
+                query = query.where(Shipment.eta <= eta_to_dt)
+            
+            query = query.limit(limit)
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            shipment_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "master_bill": s.master_bill,
+                    "vessel_name": s.vessel_name,
+                    "voyage_number": s.voyage_number,
+                    "status": s.status_code,
+                    "status_description": s.status_description,
+                    "risk_flag": s.risk_flag,
+                    "origin": s.origin_port,
+                    "destination": s.destination_port,
+                    "current_location": s.current_location,
+                    "eta": s.eta.isoformat() if s.eta else None,
+                    "etd": s.etd.isoformat() if s.etd else None
+                }
+                for s in shipments
+            ]
+            
+            logger.info(f"✅ Advanced search found {len(shipment_list)} shipments")
+            return {
+                "success": True,
+                "count": len(shipment_list),
+                "results": shipment_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error in advanced search: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def query_shipments_by_criteria(
+    search_text: Optional[str] = None,
+    include_fields: Optional[List[str]] = None,
+    sort_by: str = "eta",
+    sort_order: str = "asc",
+    limit: int = 10
+) -> dict:
+    """
+    Flexible query tool that searches across multiple fields and returns customizable results.
+    
+    Args:
+        search_text: Text to search across container, bill, vessel, ports, location (partial match)
+        include_fields: List of fields to include in results (default: all)
+        sort_by: Field to sort by (eta, etd, status_code, risk_flag, id)
+        sort_order: Sort order (asc or desc)
+        limit: Maximum results to return
+    
+    Returns:
+        Dictionary with matching shipments
+    """
+    logger.info(f"🔎 Querying shipments: search='{search_text}', sort={sort_by} {sort_order}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            # Apply text search across multiple fields
+            if search_text:
+                search_pattern = f"%{search_text}%"
+                query = query.where(
+                    or_(
+                        Shipment.container_no.like(search_pattern),
+                        Shipment.master_bill.like(search_pattern),
+                        Shipment.vessel_name.like(search_pattern),
+                        Shipment.origin_port.like(search_pattern),
+                        Shipment.destination_port.like(search_pattern),
+                        Shipment.current_location.like(search_pattern),
+                        Shipment.status_description.like(search_pattern)
                     )
-                }
-        
-        except Exception as e:
-            logger.error(f"Error updating ETA: {e}", exc_info=True)
-            return {"error": str(e)}
-    
-    async def set_risk_flag(
-        self,
-        shipment_id: str,
-        is_risk: bool,
-        reason: str
-    ) -> Dict[str, Any]:
-        """Set or remove risk flag on shipment"""
-        
-        logger.info(f"Setting risk flag for {shipment_id}: {is_risk}")
-        
-        try:
-            async with get_db_context() as db:
-                shipment = await ShipmentCRUD.get_by_id(db, shipment_id)
-                if not shipment:
-                    return {"error": f"Shipment {shipment_id} not found"}
-                
-                old_value = shipment.risk_flag
-                
-                # Update risk flag
-                await ShipmentCRUD.update(db, shipment_id, {"risk_flag": is_risk})
-                
-                # Create audit log
-                await AuditLogCRUD.create(
-                    db,
-                    shipment_id=shipment_id,
-                    action="SET_RISK_FLAG" if is_risk else "CLEAR_RISK_FLAG",
-                    reason=reason,
-                    field_name="risk_flag",
-                    old_value=str(old_value),
-                    new_value=str(is_risk),
-                    agent_id="ai-agent"
                 )
-                
-                await db.commit()
-                
-                return {
-                    "success": True,
-                    "shipment_id": shipment_id,
-                    "risk_flag": is_risk,
-                    "previous_value": old_value,
-                    "note": f"Risk flag {'set' if is_risk else 'cleared'} successfully"
-                }
-        
-        except Exception as e:
-            logger.error(f"Error setting risk flag: {e}", exc_info=True)
-            return {"error": str(e)}
+            
+            # Apply sorting
+            sort_column = getattr(Shipment, sort_by, Shipment.eta)
+            if sort_order.lower() == "desc":
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
+            
+            query = query.limit(limit)
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            # Build results with selected fields
+            all_fields = [
+                "id", "container_no", "master_bill", "vessel_name", "voyage_number",
+                "origin_port", "destination_port", "status_code", "status_description",
+                "risk_flag", "current_location", "eta", "etd", "agent_notes"
+            ]
+            
+            fields_to_include = include_fields if include_fields else all_fields
+            
+            shipment_list = []
+            for s in shipments:
+                ship_dict = {}
+                for field in fields_to_include:
+                    value = getattr(s, field, None)
+                    if isinstance(value, datetime):
+                        value = value.isoformat()
+                    ship_dict[field] = value
+                shipment_list.append(ship_dict)
+            
+            logger.info(f"✅ Query found {len(shipment_list)} shipments")
+            return {
+                "success": True,
+                "count": len(shipment_list),
+                "query": {
+                    "search_text": search_text,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order
+                },
+                "results": shipment_list
+            }
     
-    async def add_agent_note(
-        self,
-        shipment_id: str,
-        note: str,
-        append: bool = True
-    ) -> Dict[str, Any]:
-        """Add or update agent notes"""
-        
-        logger.info(f"Adding note to {shipment_id}")
-        
-        try:
-            async with get_db_context() as db:
-                shipment = await ShipmentCRUD.get_by_id(db, shipment_id)
-                if not shipment:
-                    return {"error": f"Shipment {shipment_id} not found"}
-                
-                old_notes = shipment.agent_notes
-                
-                # Append or replace
-                if append and old_notes:
-                    new_notes = f"{old_notes}\n{note}"
-                else:
-                    new_notes = note
-                
-                # Update notes
-                await ShipmentCRUD.update(db, shipment_id, {"agent_notes": new_notes})
-                
-                # Create audit log
-                await AuditLogCRUD.create(
-                    db,
-                    shipment_id=shipment_id,
-                    action="ADD_NOTE",
-                    reason="Agent added observation/note",
-                    field_name="agent_notes",
-                    old_value=old_notes,
-                    new_value=new_notes,
-                    agent_id="ai-agent"
-                )
-                
-                await db.commit()
-                
-                return {
-                    "success": True,
-                    "shipment_id": shipment_id,
-                    "note_added": note,
-                    "full_notes": new_notes
-                }
-        
-        except Exception as e:
-            logger.error(f"Error adding note: {e}", exc_info=True)
-            return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"❌ Error querying shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# ANALYTICS & REPORTING TOOLS
+# ============================================================================
+
+async def get_shipments_analytics() -> dict:
+    """
+    Get analytics and statistics about all shipments.
     
-    async def search_shipments(
-        self,
-        container_no: Optional[str] = None,
-        master_bill: Optional[str] = None,
-        status_code: Optional[str] = None,
-        risk_flag: Optional[bool] = None,
-        limit: int = 50
-    ) -> Dict[str, Any]:
-        """Search shipments with filters"""
-        
-        logger.info(f"Searching shipments with filters")
-        
-        try:
-            async with get_db_context() as db:
-                shipments = await ShipmentCRUD.search(
-                    db,
-                    container_no=container_no,
-                    master_bill=master_bill,
-                    status_code=status_code,
-                    risk_flag=risk_flag,
-                    limit=limit
-                )
-                
-                return {
-                    "success": True,
-                    "count": len(shipments),
-                    "filters_applied": {
-                        "container_no": container_no,
-                        "master_bill": master_bill,
-                        "status_code": status_code,
-                        "risk_flag": risk_flag
-                    },
-                    "results": [s.to_standard_format() for s in shipments]
+    Returns:
+        Dictionary with comprehensive statistics including:
+        - Total shipments count
+        - Count by status
+        - Risk flagged shipments
+        - Top ports (origin/destination)
+        - Vessels in use
+        - Delayed shipments
+        - Upcoming arrivals (next 7 days)
+    """
+    logger.info("📊 Getting shipments analytics")
+    
+    try:
+        async with get_db_context() as session:
+            # Total count
+            total_result = await session.execute(select(func.count(Shipment.id)))
+            total_count = total_result.scalar()
+            
+            # Count by status
+            status_result = await session.execute(
+                select(Shipment.status_code, func.count(Shipment.id))
+                .group_by(Shipment.status_code)
+            )
+            status_counts = {status: count for status, count in status_result.all()}
+            
+            # Risk flagged
+            risk_result = await session.execute(
+                select(func.count(Shipment.id))
+                .where(Shipment.risk_flag == True)
+            )
+            risk_count = risk_result.scalar()
+            
+            # Top origin ports
+            origin_result = await session.execute(
+                select(Shipment.origin_port, func.count(Shipment.id))
+                .group_by(Shipment.origin_port)
+                .order_by(func.count(Shipment.id).desc())
+                .limit(5)
+            )
+            top_origins = [{"port": port, "count": count} for port, count in origin_result.all()]
+            
+            # Top destination ports
+            dest_result = await session.execute(
+                select(Shipment.destination_port, func.count(Shipment.id))
+                .group_by(Shipment.destination_port)
+                .order_by(func.count(Shipment.id).desc())
+                .limit(5)
+            )
+            top_destinations = [{"port": port, "count": count} for port, count in dest_result.all()]
+            
+            # Active vessels
+            vessel_result = await session.execute(
+                select(Shipment.vessel_name)
+                .distinct()
+                .where(Shipment.status_code.in_(['IN_TRANSIT', 'AT_PORT']))
+            )
+            active_vessels = [v[0] for v in vessel_result.all() if v[0]]
+            
+            # Upcoming arrivals (next 7 days)
+            now = datetime.now()
+            week_later = now + timedelta(days=7)
+            upcoming_result = await session.execute(
+                select(Shipment)
+                .where(and_(
+                    Shipment.eta >= now,
+                    Shipment.eta <= week_later
+                ))
+                .order_by(Shipment.eta)
+            )
+            upcoming_shipments = upcoming_result.scalars().all()
+            upcoming_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "eta": s.eta.isoformat() if s.eta else None,
+                    "destination": s.destination_port
                 }
-        
-        except Exception as e:
-            logger.error(f"Error searching shipments: {e}", exc_info=True)
-            return {"error": str(e)}
+                for s in upcoming_shipments
+            ]
+            
+            analytics = {
+                "success": True,
+                "summary": {
+                    "total_shipments": total_count,
+                    "risk_flagged": risk_count,
+                    "status_breakdown": status_counts,
+                    "active_vessels_count": len(active_vessels)
+                },
+                "details": {
+                    "top_origin_ports": top_origins,
+                    "top_destination_ports": top_destinations,
+                    "active_vessels": active_vessels,
+                    "upcoming_arrivals": {
+                        "count": len(upcoming_list),
+                        "shipments": upcoming_list
+                    }
+                }
+            }
+            
+            logger.info(f"✅ Analytics generated: {total_count} total shipments")
+            return analytics
+    
+    except Exception as e:
+        logger.error(f"❌ Error generating analytics: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def get_delayed_shipments(days_delayed: int = 1) -> dict:
+    """
+    Find shipments that are delayed beyond their original ETA.
+    
+    Args:
+        days_delayed: Minimum number of days past ETA to consider (default 1)
+    
+    Returns:
+        List of delayed shipments with delay information
+    """
+    logger.info(f"⏰ Finding shipments delayed by {days_delayed}+ days")
+    
+    try:
+        async with get_db_context() as session:
+            now = datetime.now()
+            cutoff_date = now - timedelta(days=days_delayed)
+            
+            query = select(Shipment).where(
+                and_(
+                    Shipment.eta < cutoff_date,
+                    Shipment.status_code.in_(['IN_TRANSIT', 'DELAYED', 'AT_PORT', 'CUSTOMS_HOLD'])
+                )
+            ).order_by(Shipment.eta.asc())
+            
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            delayed_list = []
+            for s in shipments:
+                if s.eta:
+                    days_late = (now - s.eta).days
+                    delayed_list.append({
+                        "id": s.id,
+                        "container_no": s.container_no,
+                        "vessel_name": s.vessel_name,
+                        "status": s.status_code,
+                        "origin": s.origin_port,
+                        "destination": s.destination_port,
+                        "original_eta": s.eta.isoformat(),
+                        "days_delayed": days_late,
+                        "risk_flag": s.risk_flag,
+                        "agent_notes": s.agent_notes
+                    })
+            
+            logger.info(f"✅ Found {len(delayed_list)} delayed shipments")
+            return {
+                "success": True,
+                "count": len(delayed_list),
+                "criteria": f"Delayed by {days_delayed}+ days",
+                "results": delayed_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error finding delayed shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def get_shipments_by_route(
+    origin: Optional[str] = None,
+    destination: Optional[str] = None,
+    status_filter: Optional[str] = None
+) -> dict:
+    """
+    Get shipments on a specific trade route (origin to destination).
+    
+    Args:
+        origin: Origin port (partial match)
+        destination: Destination port (partial match)
+        status_filter: Optional status code filter
+    
+    Returns:
+        Shipments on the specified route with summary statistics
+    """
+    logger.info(f"🌍 Getting shipments on route: {origin} → {destination}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            if origin:
+                query = query.where(Shipment.origin_port.like(f"%{origin}%"))
+            if destination:
+                query = query.where(Shipment.destination_port.like(f"%{destination}%"))
+            if status_filter:
+                query = query.where(Shipment.status_code == status_filter)
+            
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            # Calculate route statistics
+            total = len(shipments)
+            in_transit = sum(1 for s in shipments if s.status_code == 'IN_TRANSIT')
+            delayed = sum(1 for s in shipments if s.status_code == 'DELAYED')
+            at_risk = sum(1 for s in shipments if s.risk_flag)
+            
+            shipment_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "vessel_name": s.vessel_name,
+                    "status": s.status_code,
+                    "origin": s.origin_port,
+                    "destination": s.destination_port,
+                    "eta": s.eta.isoformat() if s.eta else None,
+                    "risk_flag": s.risk_flag
+                }
+                for s in shipments
+            ]
+            
+            logger.info(f"✅ Found {total} shipments on route")
+            return {
+                "success": True,
+                "route": {
+                    "origin": origin,
+                    "destination": destination
+                },
+                "statistics": {
+                    "total": total,
+                    "in_transit": in_transit,
+                    "delayed": delayed,
+                    "at_risk": at_risk
+                },
+                "shipments": shipment_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error getting route shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# SYSTEM TOOLS
+# ============================================================================
+
+def get_server_status(include_details: bool = False) -> dict:
+    """
+    Get the current status and health of the MCP server.
+    
+    Args:
+        include_details: Whether to include detailed metrics
+    
+    Returns:
+        Server status information
+    """
+    logger.info("🏥 Getting server status")
+    
+    status = {
+        "status": "healthy",
+        "server": "logistics-orchestrator",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    if include_details:
+        status["details"] = {
+            "tools_registered": 11,
+            "database": "connected",
+            "transport": "FastMCP SSE"
+        }
+    
+    return status
+
+
+# ============================================================================
+# TOOL REGISTRATION
+# ============================================================================
+
+def register_tools(mcp):
+    """
+    Register all tools with the FastMCP instance.
+    
+    Args:
+        mcp: FastMCP server instance
+    """
+    logger.info("📝 Registering all MCP tools...")
+    
+    # Basic search & tracking
+    mcp.tool()(search_shipments)
+    mcp.tool()(track_shipment)
+    
+    # Update tools
+    mcp.tool()(update_shipment_eta)
+    mcp.tool()(set_risk_flag)
+    mcp.tool()(add_agent_note)
+    
+    # Advanced search
+    mcp.tool()(search_shipments_advanced)
+    mcp.tool()(query_shipments_by_criteria)
+    
+    # Analytics & reporting
+    mcp.tool()(get_shipments_analytics)
+    mcp.tool()(get_delayed_shipments)
+    mcp.tool()(get_shipments_by_route)
+    
+    # System
+    mcp.tool()(get_server_status)
+    
+    logger.info("✅ All 11 tools registered successfully!")
