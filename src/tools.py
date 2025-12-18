@@ -128,7 +128,7 @@ async def track_shipment(identifier: str) -> dict:
                     "eta": shipment.eta.isoformat() if shipment.eta else None,
                     "vessel": shipment.vessel_name,
                     "voyage": shipment.voyage_number,
-                    "notes": shipment.notes or []
+                    "notes": shipment.agent_notes or []
                 }
             }
             
