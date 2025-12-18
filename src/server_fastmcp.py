@@ -4,12 +4,12 @@ Simplified implementation that works seamlessly with 11Labs
 """
 import os
 import logging
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
 from fastmcp import FastMCP
 from database.database import init_db, get_db_context
 from database.models import Shipment
-from sqlalchemy import select
+from sqlalchemy import select, func, or_, and_
 
 # Setup logging
 logging.basicConfig(
@@ -390,6 +390,452 @@ async def add_agent_note(
 
 
 @mcp.tool()
+async def search_shipments_advanced(
+    vessel_name: Optional[str] = None,
+    voyage_number: Optional[str] = None,
+    origin_port: Optional[str] = None,
+    destination_port: Optional[str] = None,
+    status_codes: Optional[List[str]] = None,
+    risk_flag: Optional[bool] = None,
+    eta_from: Optional[str] = None,
+    eta_to: Optional[str] = None,
+    current_location: Optional[str] = None,
+    limit: int = 20
+) -> dict:
+    """
+    Advanced search with multiple filters for shipments. Supports complex queries.
+    
+    Args:
+        vessel_name: Filter by vessel name (partial match)
+        voyage_number: Filter by voyage number (partial match)
+        origin_port: Filter by origin port (partial match)
+        destination_port: Filter by destination port (partial match)
+        status_codes: List of status codes to filter by (e.g., ['IN_TRANSIT', 'DELAYED'])
+        risk_flag: Filter by risk status (true/false)
+        eta_from: Filter shipments arriving after this date (YYYY-MM-DD)
+        eta_to: Filter shipments arriving before this date (YYYY-MM-DD)
+        current_location: Filter by current location (partial match)
+        limit: Maximum number of results (default 20)
+    
+    Returns:
+        Dictionary with filtered shipment results
+    """
+    logger.info(f"🔍 Advanced search: vessel={vessel_name}, voyage={voyage_number}, origin={origin_port}, dest={destination_port}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            # Apply filters
+            if vessel_name:
+                query = query.where(Shipment.vessel_name.like(f"%{vessel_name}%"))
+            if voyage_number:
+                query = query.where(Shipment.voyage_number.like(f"%{voyage_number}%"))
+            if origin_port:
+                query = query.where(Shipment.origin_port.like(f"%{origin_port}%"))
+            if destination_port:
+                query = query.where(Shipment.destination_port.like(f"%{destination_port}%"))
+            if status_codes:
+                query = query.where(Shipment.status_code.in_(status_codes))
+            if risk_flag is not None:
+                query = query.where(Shipment.risk_flag == risk_flag)
+            if current_location:
+                query = query.where(Shipment.current_location.like(f"%{current_location}%"))
+            
+            # Date range filters
+            if eta_from:
+                from dateutil.parser import parse
+                eta_from_dt = parse(eta_from)
+                query = query.where(Shipment.eta >= eta_from_dt)
+            if eta_to:
+                from dateutil.parser import parse
+                eta_to_dt = parse(eta_to)
+                query = query.where(Shipment.eta <= eta_to_dt)
+            
+            query = query.limit(limit)
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            shipment_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "master_bill": s.master_bill,
+                    "vessel_name": s.vessel_name,
+                    "voyage_number": s.voyage_number,
+                    "status": s.status_code,
+                    "status_description": s.status_description,
+                    "risk_flag": s.risk_flag,
+                    "origin": s.origin_port,
+                    "destination": s.destination_port,
+                    "current_location": s.current_location,
+                    "eta": s.eta.isoformat() if s.eta else None,
+                    "etd": s.etd.isoformat() if s.etd else None
+                }
+                for s in shipments
+            ]
+            
+            logger.info(f"✅ Advanced search found {len(shipment_list)} shipments")
+            return {
+                "success": True,
+                "count": len(shipment_list),
+                "results": shipment_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error in advanced search: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+async def get_shipments_analytics() -> dict:
+    """
+    Get analytics and statistics about all shipments.
+    
+    Returns:
+        Dictionary with comprehensive statistics including:
+        - Total shipments count
+        - Count by status
+        - Risk flagged shipments
+        - Top ports (origin/destination)
+        - Vessels in use
+        - Delayed shipments
+        - Upcoming arrivals (next 7 days)
+    """
+    logger.info("📊 Getting shipments analytics")
+    
+    try:
+        async with get_db_context() as session:
+            # Total count
+            total_result = await session.execute(select(func.count(Shipment.id)))
+            total_count = total_result.scalar()
+            
+            # Count by status
+            status_result = await session.execute(
+                select(Shipment.status_code, func.count(Shipment.id))
+                .group_by(Shipment.status_code)
+            )
+            status_counts = {status: count for status, count in status_result.all()}
+            
+            # Risk flagged
+            risk_result = await session.execute(
+                select(func.count(Shipment.id))
+                .where(Shipment.risk_flag == True)
+            )
+            risk_count = risk_result.scalar()
+            
+            # Top origin ports
+            origin_result = await session.execute(
+                select(Shipment.origin_port, func.count(Shipment.id))
+                .group_by(Shipment.origin_port)
+                .order_by(func.count(Shipment.id).desc())
+                .limit(5)
+            )
+            top_origins = [{"port": port, "count": count} for port, count in origin_result.all()]
+            
+            # Top destination ports
+            dest_result = await session.execute(
+                select(Shipment.destination_port, func.count(Shipment.id))
+                .group_by(Shipment.destination_port)
+                .order_by(func.count(Shipment.id).desc())
+                .limit(5)
+            )
+            top_destinations = [{"port": port, "count": count} for port, count in dest_result.all()]
+            
+            # Active vessels
+            vessel_result = await session.execute(
+                select(Shipment.vessel_name)
+                .distinct()
+                .where(Shipment.status_code.in_(['IN_TRANSIT', 'AT_PORT']))
+            )
+            active_vessels = [v[0] for v in vessel_result.all() if v[0]]
+            
+            # Upcoming arrivals (next 7 days)
+            now = datetime.now()
+            week_later = now + timedelta(days=7)
+            upcoming_result = await session.execute(
+                select(Shipment)
+                .where(and_(
+                    Shipment.eta >= now,
+                    Shipment.eta <= week_later
+                ))
+                .order_by(Shipment.eta)
+            )
+            upcoming_shipments = upcoming_result.scalars().all()
+            upcoming_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "eta": s.eta.isoformat() if s.eta else None,
+                    "destination": s.destination_port
+                }
+                for s in upcoming_shipments
+            ]
+            
+            analytics = {
+                "success": True,
+                "summary": {
+                    "total_shipments": total_count,
+                    "risk_flagged": risk_count,
+                    "status_breakdown": status_counts,
+                    "active_vessels_count": len(active_vessels)
+                },
+                "details": {
+                    "top_origin_ports": top_origins,
+                    "top_destination_ports": top_destinations,
+                    "active_vessels": active_vessels,
+                    "upcoming_arrivals": {
+                        "count": len(upcoming_list),
+                        "shipments": upcoming_list
+                    }
+                }
+            }
+            
+            logger.info(f"✅ Analytics generated: {total_count} total shipments")
+            return analytics
+    
+    except Exception as e:
+        logger.error(f"❌ Error generating analytics: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+async def query_shipments_by_criteria(
+    search_text: Optional[str] = None,
+    include_fields: Optional[List[str]] = None,
+    sort_by: str = "eta",
+    sort_order: str = "asc",
+    limit: int = 10
+) -> dict:
+    """
+    Flexible query tool that searches across multiple fields and returns customizable results.
+    
+    Args:
+        search_text: Text to search across container, bill, vessel, ports, location (partial match)
+        include_fields: List of fields to include in results (default: all)
+        sort_by: Field to sort by (eta, etd, status_code, risk_flag, id)
+        sort_order: Sort order (asc or desc)
+        limit: Maximum results to return
+    
+    Returns:
+        Dictionary with matching shipments
+    """
+    logger.info(f"🔎 Querying shipments: search='{search_text}', sort={sort_by} {sort_order}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            # Apply text search across multiple fields
+            if search_text:
+                search_pattern = f"%{search_text}%"
+                query = query.where(
+                    or_(
+                        Shipment.container_no.like(search_pattern),
+                        Shipment.master_bill.like(search_pattern),
+                        Shipment.vessel_name.like(search_pattern),
+                        Shipment.origin_port.like(search_pattern),
+                        Shipment.destination_port.like(search_pattern),
+                        Shipment.current_location.like(search_pattern),
+                        Shipment.status_description.like(search_pattern)
+                    )
+                )
+            
+            # Apply sorting
+            sort_column = getattr(Shipment, sort_by, Shipment.eta)
+            if sort_order.lower() == "desc":
+                query = query.order_by(sort_column.desc())
+            else:
+                query = query.order_by(sort_column.asc())
+            
+            query = query.limit(limit)
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            # Build results with selected fields
+            all_fields = [
+                "id", "container_no", "master_bill", "vessel_name", "voyage_number",
+                "origin_port", "destination_port", "status_code", "status_description",
+                "risk_flag", "current_location", "eta", "etd", "agent_notes"
+            ]
+            
+            fields_to_include = include_fields if include_fields else all_fields
+            
+            shipment_list = []
+            for s in shipments:
+                ship_dict = {}
+                for field in fields_to_include:
+                    value = getattr(s, field, None)
+                    if isinstance(value, datetime):
+                        value = value.isoformat()
+                    ship_dict[field] = value
+                shipment_list.append(ship_dict)
+            
+            logger.info(f"✅ Query found {len(shipment_list)} shipments")
+            return {
+                "success": True,
+                "count": len(shipment_list),
+                "query": {
+                    "search_text": search_text,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order
+                },
+                "results": shipment_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error querying shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+async def get_delayed_shipments(days_delayed: int = 1) -> dict:
+    """
+    Find shipments that are delayed beyond their original ETA.
+    
+    Args:
+        days_delayed: Minimum number of days past ETA to consider (default 1)
+    
+    Returns:
+        List of delayed shipments with delay information
+    """
+    logger.info(f"⏰ Finding shipments delayed by {days_delayed}+ days")
+    
+    try:
+        async with get_db_context() as session:
+            now = datetime.now()
+            cutoff_date = now - timedelta(days=days_delayed)
+            
+            query = select(Shipment).where(
+                and_(
+                    Shipment.eta < cutoff_date,
+                    Shipment.status_code.in_(['IN_TRANSIT', 'DELAYED', 'AT_PORT', 'CUSTOMS_HOLD'])
+                )
+            ).order_by(Shipment.eta.asc())
+            
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            delayed_list = []
+            for s in shipments:
+                if s.eta:
+                    days_late = (now - s.eta).days
+                    delayed_list.append({
+                        "id": s.id,
+                        "container_no": s.container_no,
+                        "vessel_name": s.vessel_name,
+                        "status": s.status_code,
+                        "origin": s.origin_port,
+                        "destination": s.destination_port,
+                        "original_eta": s.eta.isoformat(),
+                        "days_delayed": days_late,
+                        "risk_flag": s.risk_flag,
+                        "agent_notes": s.agent_notes
+                    })
+            
+            logger.info(f"✅ Found {len(delayed_list)} delayed shipments")
+            return {
+                "success": True,
+                "count": len(delayed_list),
+                "criteria": f"Delayed by {days_delayed}+ days",
+                "results": delayed_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error finding delayed shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+async def get_shipments_by_route(
+    origin: Optional[str] = None,
+    destination: Optional[str] = None,
+    status_filter: Optional[str] = None
+) -> dict:
+    """
+    Get shipments on a specific trade route (origin to destination).
+    
+    Args:
+        origin: Origin port (partial match)
+        destination: Destination port (partial match)
+        status_filter: Optional status code filter
+    
+    Returns:
+        Shipments on the specified route with summary statistics
+    """
+    logger.info(f"🌍 Getting shipments on route: {origin} → {destination}")
+    
+    try:
+        async with get_db_context() as session:
+            query = select(Shipment)
+            
+            if origin:
+                query = query.where(Shipment.origin_port.like(f"%{origin}%"))
+            if destination:
+                query = query.where(Shipment.destination_port.like(f"%{destination}%"))
+            if status_filter:
+                query = query.where(Shipment.status_code == status_filter)
+            
+            result = await session.execute(query)
+            shipments = result.scalars().all()
+            
+            # Calculate route statistics
+            total = len(shipments)
+            in_transit = sum(1 for s in shipments if s.status_code == 'IN_TRANSIT')
+            delayed = sum(1 for s in shipments if s.status_code == 'DELAYED')
+            at_risk = sum(1 for s in shipments if s.risk_flag)
+            
+            shipment_list = [
+                {
+                    "id": s.id,
+                    "container_no": s.container_no,
+                    "vessel_name": s.vessel_name,
+                    "status": s.status_code,
+                    "origin": s.origin_port,
+                    "destination": s.destination_port,
+                    "eta": s.eta.isoformat() if s.eta else None,
+                    "risk_flag": s.risk_flag
+                }
+                for s in shipments
+            ]
+            
+            logger.info(f"✅ Found {total} shipments on route")
+            return {
+                "success": True,
+                "route": {
+                    "origin": origin,
+                    "destination": destination
+                },
+                "statistics": {
+                    "total": total,
+                    "in_transit": in_transit,
+                    "delayed": delayed,
+                    "at_risk": at_risk
+                },
+                "shipments": shipment_list
+            }
+    
+    except Exception as e:
+        logger.error(f"❌ Error getting route shipments: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
 def get_server_status(include_details: bool = False) -> dict:
     """
     Get the current status and health of the MCP server.
@@ -411,7 +857,7 @@ def get_server_status(include_details: bool = False) -> dict:
     
     if include_details:
         status["details"] = {
-            "tools_registered": 6,
+            "tools_registered": 11,
             "database": "connected",
             "transport": "FastMCP SSE"
         }
@@ -424,7 +870,10 @@ if __name__ == '__main__':
     logger.info("="*60)
     logger.info("🚀 Starting Logistics MCP Server with FastMCP")
     logger.info(f"📡 Port: {PORT}")
-    logger.info(f"🔧 Tools: 6 (search, track, update_eta, risk_flag, note, status)")
+    logger.info(f"🔧 Tools: 11 registered")
+    logger.info("   Core: search, track, update_eta, set_risk, add_note")
+    logger.info("   Advanced: advanced_search, analytics, query, delayed, route")
+    logger.info("   System: server_status")
     logger.info("="*60)
     
     try:
