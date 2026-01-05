@@ -1026,6 +1026,373 @@ def get_server_status(include_details: bool = False) -> dict:
 
 
 # ============================================================================
+# Document Generation Tools (via Analytics Engine)
+# ============================================================================
+
+async def generate_bill_of_lading(shipment_id: str) -> dict:
+    """
+    Generate a Bill of Lading (BOL) PDF document for a shipment.
+    
+    The Bill of Lading is the most critical shipping document - it serves as:
+    - Receipt of goods by the carrier
+    - Contract of carriage
+    - Document of title to the goods
+    
+    Args:
+        shipment_id: Unique shipment identifier (e.g., "job-2025-001")
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "document_type": "BILL_OF_LADING",
+            "document_number": str,
+            "file_path": str,
+            "document_url": str,
+            "file_size_kb": float
+        }
+    
+    Example:
+        >>> result = await generate_bill_of_lading("job-2025-001")
+        >>> print(result["document_url"])
+        "/documents/BOL_job-2025-001_20260105.pdf"
+    """
+    try:
+        logger.info(f"Generating Bill of Lading for shipment {shipment_id}")
+        
+        # Get shipment data from database
+        async with get_db_context() as session:
+            query = select(Shipment).where(Shipment.id == shipment_id)
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                return {
+                    "success": False,
+                    "error": f"Shipment {shipment_id} not found"
+                }
+        
+        # Prepare BOL data
+        bol_data = {
+            "shipment_id": shipment_id,
+            "carrier_name": shipment.carrier_name if hasattr(shipment, 'carrier_name') else "N/A",
+            "vessel_name": shipment.vessel_name or "N/A",
+            "voyage_number": shipment.voyage_number or "N/A",
+            "port_of_loading": shipment.origin_port or "N/A",
+            "port_of_discharge": shipment.destination_port or "N/A",
+            
+            # Shipper (from shipment or defaults)
+            "shipper_name": shipment.shipper_name if hasattr(shipment, 'shipper_name') else "Shipper Name Required",
+            "shipper_address": getattr(shipment, 'shipper_address', 'Shipper Address Required'),
+            "shipper_city": getattr(shipment, 'shipper_city', shipment.origin_port or ""),
+            "shipper_country": getattr(shipment, 'shipper_country', 'Country Required'),
+            
+            # Consignee (from shipment or defaults)
+            "consignee_name": shipment.consignee_name if hasattr(shipment, 'consignee_name') else "Consignee Name Required",
+            "consignee_address": shipment.consignee_address if hasattr(shipment, 'consignee_address') else "Consignee Address Required",
+            "consignee_city": shipment.consignee_city if hasattr(shipment, 'consignee_city') else shipment.destination_port or "",
+            "consignee_country": shipment.consignee_country if hasattr(shipment, 'consignee_country') else "Country Required",
+            
+            # Container details (simplified - in production, fetch from containers table)
+            "containers": [
+                {
+                    "number": shipment.container_no or "CNTR1234567",
+                    "seal_number": getattr(shipment, 'seal_number', 'SEAL001'),
+                    "type": getattr(shipment, 'container_type', '40HC'),
+                    "package_count": getattr(shipment, 'package_count', 100),
+                    "package_type": getattr(shipment, 'package_type', 'CARTONS'),
+                    "description": getattr(shipment, 'cargo_description', 'General Cargo'),
+                    "weight": getattr(shipment, 'weight_kg', 15000),
+                    "volume": getattr(shipment, 'volume_cbm', 67.5)
+                }
+            ]
+        }
+        
+        # Call analytics engine to generate PDF
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/generate-document",
+                json={
+                    "document_type": "BOL",
+                    "data": bol_data
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+        
+        logger.info(f"✅ BOL generated: {result.get('document_url')}")
+        return result
+        
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error generating BOL: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error generating BOL: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def generate_commercial_invoice(shipment_id: str, invoice_number: Optional[str] = None) -> dict:
+    """
+    Generate a Commercial Invoice PDF for customs clearance.
+    
+    The Commercial Invoice is required for international shipments and includes:
+    - Exporter/Importer details
+    - Itemized list of goods with HS codes
+    - Pricing, freight, insurance
+    - Total declared value for customs
+    
+    Args:
+        shipment_id: Unique shipment identifier
+        invoice_number: Optional invoice number (auto-generated if not provided)
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "document_type": "COMMERCIAL_INVOICE",
+            "invoice_number": str,
+            "file_path": str,
+            "document_url": str,
+            "total_amount": float,
+            "currency": str
+        }
+    
+    Example:
+        >>> result = await generate_commercial_invoice("job-2025-001", "INV-2025-001")
+        >>> print(f"Invoice total: {result['currency']} {result['total_amount']}")
+    """
+    try:
+        logger.info(f"Generating Commercial Invoice for shipment {shipment_id}")
+        
+        # Get shipment data
+        async with get_db_context() as session:
+            query = select(Shipment).where(Shipment.id == shipment_id)
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                return {
+                    "success": False,
+                    "error": f"Shipment {shipment_id} not found"
+                }
+        
+        # Generate invoice number if not provided
+        if not invoice_number:
+            invoice_number = f"INV-{shipment_id}"
+        
+        # Prepare invoice data
+        invoice_data = {
+            "shipment_id": shipment_id,
+            "invoice_number": invoice_number,
+            "po_number": getattr(shipment, 'po_number', 'N/A'),
+            
+            # Exporter details
+            "exporter_name": getattr(shipment, 'shipper_name', 'Exporter Name Required'),
+            "exporter_address": getattr(shipment, 'shipper_address', 'Address Required'),
+            "exporter_city": getattr(shipment, 'shipper_city', shipment.origin_port or ""),
+            "exporter_country": getattr(shipment, 'shipper_country', 'Country Required'),
+            "exporter_tax_id": getattr(shipment, 'shipper_tax_id', 'N/A'),
+            "exporter_phone": getattr(shipment, 'shipper_phone', 'N/A'),
+            
+            # Importer details
+            "importer_name": getattr(shipment, 'consignee_name', 'Importer Name Required'),
+            "importer_address": getattr(shipment, 'consignee_address', 'Address Required'),
+            "importer_city": getattr(shipment, 'consignee_city', shipment.destination_port or ""),
+            "importer_country": getattr(shipment, 'consignee_country', 'Country Required'),
+            "importer_tax_id": getattr(shipment, 'consignee_tax_id', 'N/A'),
+            "importer_phone": getattr(shipment, 'consignee_phone', 'N/A'),
+            
+            # Terms
+            "currency": getattr(shipment, 'currency', 'USD'),
+            "incoterms": getattr(shipment, 'incoterms', 'FOB'),
+            "payment_terms": getattr(shipment, 'payment_terms', 'NET 30'),
+            "country_of_origin": getattr(shipment, 'origin_country', 'N/A'),
+            
+            # Line items (simplified - in production, fetch from line_items table)
+            "line_items": [
+                {
+                    "description": getattr(shipment, 'cargo_description', 'General Cargo'),
+                    "part_number": getattr(shipment, 'part_number', 'N/A'),
+                    "hs_code": getattr(shipment, 'hs_code', '0000.00.0000'),
+                    "quantity": getattr(shipment, 'package_count', 100),
+                    "unit": "PCS",
+                    "unit_price": getattr(shipment, 'unit_price', 100.00),
+                    "country_of_origin": getattr(shipment, 'origin_country', 'N/A')
+                }
+            ],
+            
+            # Charges
+            "freight_charges": getattr(shipment, 'freight_charges', 2500.00),
+            "insurance_charges": getattr(shipment, 'insurance_charges', 300.00),
+            "discount_percentage": 0,
+            "vat_percentage": 0
+        }
+        
+        # Call analytics engine
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/generate-document",
+                json={
+                    "document_type": "COMMERCIAL_INVOICE",
+                    "data": invoice_data
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+        
+        logger.info(f"✅ Invoice generated: {result.get('document_url')}")
+        return result
+        
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error generating invoice: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error generating invoice: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def generate_packing_list(shipment_id: str, packing_list_number: Optional[str] = None) -> dict:
+    """
+    Generate a Packing List PDF with detailed cargo breakdown.
+    
+    The Packing List provides detailed information about package contents:
+    - Package-by-package breakdown
+    - Items within each package
+    - Dimensions and weights
+    - Special handling instructions
+    
+    Args:
+        shipment_id: Unique shipment identifier
+        packing_list_number: Optional packing list number (auto-generated if not provided)
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "document_type": "PACKING_LIST",
+            "packing_list_number": str,
+            "file_path": str,
+            "document_url": str,
+            "total_packages": int,
+            "total_weight_kg": float
+        }
+    
+    Example:
+        >>> result = await generate_packing_list("job-2025-001")
+        >>> print(f"Total packages: {result['total_packages']}")
+    """
+    try:
+        logger.info(f"Generating Packing List for shipment {shipment_id}")
+        
+        # Get shipment data
+        async with get_db_context() as session:
+            query = select(Shipment).where(Shipment.id == shipment_id)
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                return {
+                    "success": False,
+                    "error": f"Shipment {shipment_id} not found"
+                }
+        
+        # Generate packing list number if not provided
+        if not packing_list_number:
+            packing_list_number = f"PKG-{shipment_id}"
+        
+        # Prepare packing list data
+        packing_data = {
+            "shipment_id": shipment_id,
+            "packing_list_number": packing_list_number,
+            "invoice_number": f"INV-{shipment_id}",
+            "bl_number": f"BOL-{shipment_id}",
+            "container_number": shipment.container_no or "CNTR1234567",
+            
+            # Shipper/Consignee
+            "shipper_name": getattr(shipment, 'shipper_name', 'Shipper Name Required'),
+            "shipper_address": getattr(shipment, 'shipper_address', 'Address Required'),
+            "shipper_city": getattr(shipment, 'shipper_city', shipment.origin_port or ""),
+            "shipper_country": getattr(shipment, 'shipper_country', 'Country Required'),
+            "shipper_contact": getattr(shipment, 'shipper_phone', 'N/A'),
+            
+            "consignee_name": getattr(shipment, 'consignee_name', 'Consignee Name Required'),
+            "consignee_address": getattr(shipment, 'consignee_address', 'Address Required'),
+            "consignee_city": getattr(shipment, 'consignee_city', shipment.destination_port or ""),
+            "consignee_country": getattr(shipment, 'consignee_country', 'Country Required'),
+            "consignee_contact": getattr(shipment, 'consignee_phone', 'N/A'),
+            
+            # Port info
+            "port_of_loading": shipment.origin_port or "N/A",
+            "port_of_discharge": shipment.destination_port or "N/A",
+            
+            # Package details (simplified - in production, fetch from packages table)
+            "packages": [
+                {
+                    "package_id": f"PKG-001",
+                    "package_type": getattr(shipment, 'package_type', 'CARTON'),
+                    "marks": f"{shipment_id}-001",
+                    "length": 120,
+                    "width": 80,
+                    "height": 100,
+                    "volume": 0.96,
+                    "gross_weight": getattr(shipment, 'weight_kg', 250.0),
+                    "net_weight": getattr(shipment, 'weight_kg', 250.0) * 0.95,
+                    "items": [
+                        {
+                            "description": getattr(shipment, 'cargo_description', 'General Cargo'),
+                            "part_number": getattr(shipment, 'part_number', 'N/A'),
+                            "quantity": getattr(shipment, 'package_count', 100),
+                            "unit_weight": getattr(shipment, 'weight_kg', 250.0) / getattr(shipment, 'package_count', 100),
+                            "total_weight": getattr(shipment, 'weight_kg', 250.0) * 0.95
+                        }
+                    ]
+                }
+            ],
+            
+            # Special instructions
+            "special_instructions": getattr(shipment, 'special_instructions', ''),
+            "is_fragile": getattr(shipment, 'is_fragile', False)
+        }
+        
+        # Call analytics engine
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/generate-document",
+                json={
+                    "document_type": "PACKING_LIST",
+                    "data": packing_data
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+        
+        logger.info(f"✅ Packing list generated: {result.get('document_url')}")
+        return result
+        
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error generating packing list: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error generating packing list: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
 # TOOL REGISTRATION
 # ============================================================================
 
@@ -1062,7 +1429,12 @@ def register_tools(mcp):
     # Vessel tracking
     mcp.tool()(real_time_vessel_tracking)
     
+    # Document generation
+    mcp.tool()(generate_bill_of_lading)
+    mcp.tool()(generate_commercial_invoice)
+    mcp.tool()(generate_packing_list)
+    
     # System
     mcp.tool()(get_server_status)
     
-    logger.info("✅ All 13 tools registered successfully!")
+    logger.info("✅ All 16 tools registered successfully!")
