@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     TRACKING_API_URL: str = "https://api.tracking.com"
     TRACKING_API_KEY: str = "placeholder-key"
     
+    # Vessel Tracking API (VesselFinder or similar)
+    # Leave empty to use mock data, provide API key for real AIS data
+    VESSELFINDER_API_KEY: Optional[str] = None
+    
     # Retry Configuration
     MAX_RETRIES: int = 3
     RETRY_DELAY: int = 1

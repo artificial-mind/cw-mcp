@@ -5,12 +5,21 @@ All tool implementations for the FastMCP server
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
+import httpx
 
 from database.database import get_db_context
 from database.models import Shipment
 from sqlalchemy import select, func, or_, and_
+from adapters.vessel_tracking_adapter import VesselTrackingAdapter
+from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Initialize vessel tracking adapter (with API key if provided, otherwise mock)
+vessel_tracker = VesselTrackingAdapter(api_key=settings.VESSELFINDER_API_KEY)
+
+# Analytics Engine URL
+ANALYTICS_ENGINE_URL = settings.ANALYTICS_ENGINE_URL if hasattr(settings, 'ANALYTICS_ENGINE_URL') else "http://localhost:8002"
 
 
 # ============================================================================
@@ -797,6 +806,193 @@ async def get_shipments_by_route(
 
 
 # ============================================================================
+# PREDICTIVE AI TOOLS
+# ============================================================================
+
+async def predictive_delay_detection(identifier: str) -> dict:
+    """
+    Predict if a shipment will be delayed using ML model.
+    
+    Uses trained Random Forest classifier to analyze shipment characteristics
+    and predict delay probability 48-72 hours in advance.
+    
+    Args:
+        identifier: Shipment ID, container number, or bill of lading
+    
+    Returns:
+        {
+            "success": bool,
+            "shipment_id": str,
+            "will_delay": bool,
+            "confidence": float (0-1),
+            "delay_probability": float,
+            "risk_factors": [str],
+            "recommendation": str,
+            "model_accuracy": float
+        }
+    
+    Example:
+        >>> await predictive_delay_detection("job-2025-001")
+        {
+            "will_delay": true,
+            "confidence": 0.85,
+            "delay_probability": 0.78,
+            "risk_factors": ["Peak shipping season", "High-risk route"],
+            "recommendation": "HIGH RISK: 78% chance of delay. Consider proactive notification."
+        }
+    """
+    logger.info(f"🔮 Predicting delay for: {identifier}")
+    
+    try:
+        # Fetch shipment data
+        async with get_db_context() as session:
+            query = select(Shipment).where(
+                (Shipment.id == identifier) |
+                (Shipment.container_no == identifier) |
+                (Shipment.master_bill == identifier)
+            )
+            result = await session.execute(query)
+            shipment = result.scalar_one_or_none()
+            
+            if not shipment:
+                logger.warning(f"⚠️ Shipment not found: {identifier}")
+                return {
+                    "success": False,
+                    "error": f"Shipment not found: {identifier}"
+                }
+            
+            # Prepare shipment data for prediction
+            shipment_data = {
+                "id": shipment.id,
+                "origin_port": shipment.origin_port,
+                "destination_port": shipment.destination_port,
+                "vessel_name": shipment.vessel_name,
+                "etd": shipment.etd.isoformat() if shipment.etd else None,
+                "eta": shipment.eta.isoformat() if shipment.eta else None,
+                "risk_flag": shipment.risk_flag,
+                "status_code": shipment.status_code,
+                "container_type": "40HC"  # Default if not in model
+            }
+            
+            # Call Analytics Engine API for prediction
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                try:
+                    response = await client.post(
+                        f"{ANALYTICS_ENGINE_URL}/predict-delay",
+                        json={"shipment_data": shipment_data}
+                    )
+                    response.raise_for_status()
+                    prediction = response.json()
+                    
+                except httpx.HTTPError as e:
+                    logger.error(f"❌ Analytics Engine API error: {e}")
+                    return {
+                        "success": False,
+                        "error": f"Analytics Engine unavailable: {str(e)}"
+                    }
+            
+            if not prediction.get("success"):
+                return prediction
+            
+            # Add shipment context
+            prediction["shipment_id"] = shipment.id
+            prediction["current_status"] = shipment.status_code
+            prediction["origin"] = shipment.origin_port
+            prediction["destination"] = shipment.destination_port
+            prediction["vessel"] = shipment.vessel_name
+            
+            logger.info(
+                f"✅ Prediction complete: {'DELAYED' if prediction['will_delay'] else 'ON-TIME'} "
+                f"(confidence: {prediction['confidence']:.1%})"
+            )
+            
+            return prediction
+    
+    except Exception as e:
+        logger.error(f"❌ Error in delay prediction: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# VESSEL TRACKING TOOLS
+# ============================================================================
+
+async def real_time_vessel_tracking(vessel_name: str) -> dict:
+    """
+    Track a vessel in real-time using AIS (Automatic Identification System) data.
+    
+    Get live position, speed, heading, status, destination, and ETA for any commercial vessel.
+    This tool uses real API data when available, with realistic mock data as fallback.
+    
+    Args:
+        vessel_name: Name of the vessel to track (e.g., "MAERSK ESSEX", "MSC GULSUN", "EVER GIVEN")
+    
+    Returns:
+        Real-time vessel tracking data including:
+        - Vessel identification (name, IMO, MMSI, type, flag)
+        - Current position (latitude, longitude, timestamp)
+        - Navigation data (speed in knots, heading in degrees, status)
+        - Destination port and estimated arrival time
+        - Data source (API or Mock)
+    
+    Examples:
+        >>> await real_time_vessel_tracking("MAERSK ESSEX")
+        {
+            "success": True,
+            "vessel_name": "MAERSK ESSEX",
+            "imo": "9632506",
+            "mmsi": "219024000",
+            "vessel_type": "Container Ship",
+            "position": {"lat": 35.4521, "lon": 115.2341, "timestamp": "2026-01-05T..."},
+            "navigation": {"speed": 19.5, "heading": 245, "status": "Under way using engine"},
+            "destination": "Rotterdam",
+            "eta": "2026-01-18T14:00:00Z",
+            "data_source": "Mock Data (Simulated)"
+        }
+    """
+    logger.info(f"🚢 Tracking vessel: {vessel_name}")
+    
+    try:
+        # Search for vessel first
+        vessel_info = await vessel_tracker.search_vessel(vessel_name)
+        
+        if not vessel_info:
+            logger.warning(f"⚠️ Vessel not found: {vessel_name}")
+            return {
+                "success": False,
+                "error": f"Vessel not found: {vessel_name}",
+                "suggestion": "Available vessels (mock): MAERSK ESSEX, MSC GULSUN, COSCO SHIPPING UNIVERSE, EVER GIVEN, CMA CGM ANTOINE DE SAINT EXUPERY"
+            }
+        
+        # Get current position
+        position_data = await vessel_tracker.get_vessel_position(vessel_name=vessel_name)
+        
+        if not position_data:
+            logger.error(f"❌ Could not get position for {vessel_name}")
+            return {
+                "success": False,
+                "error": f"Could not retrieve position data for {vessel_name}"
+            }
+        
+        logger.info(f"✅ Vessel tracked: {vessel_name} at {position_data['position']['lat']}, {position_data['position']['lon']}")
+        
+        return {
+            "success": True,
+            **position_data
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error tracking vessel: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
 # SYSTEM TOOLS
 # ============================================================================
 
@@ -860,7 +1056,13 @@ def register_tools(mcp):
     mcp.tool()(get_delayed_shipments)
     mcp.tool()(get_shipments_by_route)
     
+    # Predictive AI
+    mcp.tool()(predictive_delay_detection)
+    
+    # Vessel tracking
+    mcp.tool()(real_time_vessel_tracking)
+    
     # System
     mcp.tool()(get_server_status)
     
-    logger.info("✅ All 11 tools registered successfully!")
+    logger.info("✅ All 13 tools registered successfully!")

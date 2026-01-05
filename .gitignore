@@ -73,3 +73,9 @@ logistics-voice-ui/
 # Database
 logistics.db
 
+# ML artifacts (now in cw-analytics-engine)
+models/
+data/
+src/ml/
+*.pkl
+*.joblib
