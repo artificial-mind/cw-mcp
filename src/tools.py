@@ -1393,6 +1393,235 @@ async def generate_packing_list(shipment_id: str, packing_list_number: Optional[
 
 
 # ============================================================================
+# REAL-TIME TRACKING TOOLS (DAY 6 - TOOLS 12-14)
+# ============================================================================
+
+async def track_vessel_realtime(
+    vessel_name: Optional[str] = None,
+    imo_number: Optional[str] = None,
+    mmsi: Optional[str] = None
+) -> dict:
+    """
+    Track vessel in real-time using AIS data.
+    
+    Provides live position, speed, heading, course, and estimated arrival information
+    for ocean vessels. Can search by vessel name, IMO number, or MMSI.
+    
+    Args:
+        vessel_name: Name of the vessel (e.g., "MAERSK SEALAND")
+        imo_number: International Maritime Organization number (7 digits)
+        mmsi: Maritime Mobile Service Identity (9 digits)
+    
+    Returns:
+        Dictionary with vessel tracking data including:
+        - Vessel identification
+        - Current GPS position (lat/lon)
+        - Speed in knots
+        - Heading in degrees
+        - Vessel status (underway, at anchor, etc.)
+        - Next port of call
+        - Estimated time of arrival
+    
+    Example:
+        >>> track_vessel_realtime(vessel_name="MAERSK")
+        {
+            "success": True,
+            "data": {
+                "vessel_name": "MAERSK SEALAND",
+                "position": {"lat": 37.776995, "lon": -122.420063},
+                "speed": 12.64,
+                "heading": 273.0,
+                "status": "Underway using engine",
+                "next_port": "Oakland",
+                "eta": "2025-01-25T14:00:00Z"
+            }
+        }
+    """
+    logger.info(f"🚢 Tracking vessel: name={vessel_name}, imo={imo_number}, mmsi={mmsi}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/api/vessel/track",
+                json={
+                    "vessel_name": vessel_name,
+                    "imo_number": imo_number,
+                    "mmsi": mmsi
+                }
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"✅ Vessel tracked: {result.get('data', {}).get('vessel_name', 'Unknown')}")
+            return result
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error tracking vessel: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error tracking vessel: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def track_multimodal_shipment(shipment_id: str) -> dict:
+    """
+    Track shipment across multiple transport modes (ocean, rail, truck).
+    
+    Provides comprehensive journey tracking showing all transport legs from origin
+    to destination, including progress percentage, current location, and handoff points
+    between different carriers and transport modes.
+    
+    Args:
+        shipment_id: Shipment or job number (e.g., "job-2025-001")
+    
+    Returns:
+        Dictionary with multimodal tracking data including:
+        - Overall shipment status and progress percentage
+        - Current transport mode and location
+        - All transport legs (completed, in-progress, planned)
+        - Handoff events between carriers
+        - Distance and ETA for each leg
+        - Origin and final destination
+    
+    Example:
+        >>> track_multimodal_shipment("job-2025-001")
+        {
+            "success": True,
+            "data": {
+                "shipment_id": "job-2025-001",
+                "status": "in_transit",
+                "progress_percentage": 16.7,
+                "journey": [
+                    {
+                        "leg_number": 1,
+                        "mode": "ocean",
+                        "from": "Shanghai Port",
+                        "to": "Los Angeles Port",
+                        "status": "in_transit",
+                        "eta": "2025-01-23T14:00:00Z"
+                    },
+                    {
+                        "leg_number": 2,
+                        "mode": "rail",
+                        "from": "Los Angeles Port",
+                        "to": "Chicago Rail Yard",
+                        "status": "planned"
+                    }
+                ]
+            }
+        }
+    """
+    logger.info(f"🚚 Tracking multimodal shipment: {shipment_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ANALYTICS_ENGINE_URL}/api/shipment/{shipment_id}/multimodal-tracking"
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"✅ Multimodal shipment tracked: {shipment_id} - {result.get('data', {}).get('progress_percentage', 0)}% complete")
+            return result
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error tracking multimodal shipment: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error tracking multimodal shipment: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def track_container_live(container_number: str) -> dict:
+    """
+    Track container with live IoT sensor data.
+    
+    Provides real-time container tracking with comprehensive IoT sensor monitoring
+    including GPS location, temperature, humidity, shock detection, door sensors,
+    and battery levels. Generates alerts for deviations and security events.
+    
+    Args:
+        container_number: Container number (e.g., "MAEU1234567")
+    
+    Returns:
+        Dictionary with live container tracking data including:
+        - Container type and shipment assignment
+        - GPS location (latitude/longitude)
+        - Temperature monitoring (for reefer containers)
+        - Humidity levels
+        - Shock/impact events with severity
+        - Door open/close event history
+        - Battery level percentage
+        - Active alerts and warnings
+    
+    Example:
+        >>> track_container_live("MAEU1234567")
+        {
+            "success": True,
+            "data": {
+                "container_number": "MAEU1234567",
+                "container_type": "40HC Reefer",
+                "gps": {
+                    "latitude": 37.776995,
+                    "longitude": -122.420063,
+                    "accuracy_meters": 13
+                },
+                "temperature": {
+                    "temperature_celsius": -15.8,
+                    "setpoint_celsius": -18.0,
+                    "deviation": 2.2
+                },
+                "alerts": [
+                    {
+                        "type": "temperature_deviation",
+                        "severity": "medium",
+                        "message": "Temperature deviation: 2.2°C from setpoint"
+                    }
+                ]
+            }
+        }
+    """
+    logger.info(f"📦 Tracking container with live sensors: {container_number}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ANALYTICS_ENGINE_URL}/api/container/{container_number}/live-tracking"
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            alerts = result.get('data', {}).get('alert_count', 0)
+            logger.info(f"✅ Container tracked: {container_number} - {alerts} active alerts")
+            return result
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error tracking container: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error tracking container: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
 # TOOL REGISTRATION
 # ============================================================================
 
@@ -1426,7 +1655,7 @@ def register_tools(mcp):
     # Predictive AI
     mcp.tool()(predictive_delay_detection)
     
-    # Vessel tracking
+    # Vessel tracking (legacy)
     mcp.tool()(real_time_vessel_tracking)
     
     # Document generation
@@ -1434,7 +1663,13 @@ def register_tools(mcp):
     mcp.tool()(generate_commercial_invoice)
     mcp.tool()(generate_packing_list)
     
+    # Real-time tracking (Day 6 - Tools 12-14)
+    mcp.tool()(track_vessel_realtime)
+    mcp.tool()(track_multimodal_shipment)
+    mcp.tool()(track_container_live)
+    
     # System
     mcp.tool()(get_server_status)
     
-    logger.info("✅ All 16 tools registered successfully!")
+    logger.info("✅ All 19 tools registered successfully!")
+

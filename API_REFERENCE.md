@@ -478,8 +478,122 @@ Content-Type: application/json
 | **Analytics** | `get_shipments_analytics`, `get_delayed_shipments`, `get_shipments_by_route` | 3 |
 | **AI/ML** | `predictive_delay_detection`, `real_time_vessel_tracking` | 2 |
 | **Documents** | `generate_bill_of_lading`, `generate_commercial_invoice`, `generate_packing_list` | 3 |
+| **Real-Time Tracking (Day 6)** | `track_vessel_realtime`, `track_multimodal_shipment`, `track_container_live` | 3 |
 | **Batch** | `batch_track_shipments` | 1 |
-| **Total** | | **16** |
+| **Total** | | **19** |
+
+---
+
+## Day 6 - Real-Time Tracking Tools (Tools 12-14)
+
+### `track_vessel_realtime`
+
+**Description:** Track vessel in real-time using AIS data with comprehensive navigation details. Provides live GPS position, speed in knots, heading in degrees, vessel status, next port, and ETA.
+
+**Input Schema:**
+```json
+{
+  "vessel_name": "MAERSK",
+  "imo_number": "1234567",
+  "mmsi": "123456789"
+}
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "data": {
+    "vessel_name": "MAERSK SEALAND",
+    "imo": "9632179",
+    "mmsi": "220532000",
+    "position": {
+      "lat": 37.776995,
+      "lon": -122.420063
+    },
+    "speed": 12.64,
+    "heading": 273.0,
+    "status": "Underway using engine",
+    "next_port": "Oakland",
+    "eta": "2025-01-25T14:00:00Z"
+  }
+}
+```
+
+### `track_multimodal_shipment`
+
+**Description:** Track shipment across multiple transport modes (ocean, rail, truck). Shows complete journey with all legs, progress percentage, current location, and handoff points between carriers.
+
+**Input Schema:**
+```json
+{
+  "shipment_id": "job-2025-001"
+}
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "data": {
+    "shipment_id": "job-2025-001",
+    "status": "in_transit",
+    "progress_percentage": 16.7,
+    "current_mode": "ocean",
+    "journey": [
+      {
+        "leg_number": 1,
+        "mode": "ocean",
+        "from": "Shanghai Port",
+        "to": "Los Angeles Port",
+        "status": "in_transit",
+        "eta": "2025-01-23T14:00:00Z"
+      }
+    ],
+    "total_legs": 3
+  }
+}
+```
+
+### `track_container_live`
+
+**Description:** Track container with live IoT sensor data. Provides real-time GPS location, temperature monitoring, humidity, shock detection, door events, battery level, and active alerts.
+
+**Input Schema:**
+```json
+{
+  "container_number": "MAEU1234567"
+}
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "data": {
+    "container_number": "MAEU1234567",
+    "container_type": "40HC Reefer",
+    "battery_level": 87,
+    "gps": {
+      "latitude": 37.776995,
+      "longitude": -122.420063
+    },
+    "temperature": {
+      "temperature_celsius": -15.8,
+      "setpoint_celsius": -18.0,
+      "deviation": 2.2
+    },
+    "alerts": [
+      {
+        "type": "temperature_deviation",
+        "severity": "medium",
+        "message": "Temperature deviation: 2.2°C from setpoint"
+      }
+    ],
+    "alert_count": 1
+  }
+}
+```
 
 ---
 
@@ -708,5 +822,6 @@ asyncio.run(test())
 
 ## Version History
 
+- **1.1.0** (2026-01-06): Added 3 real-time tracking tools (vessel, multimodal, container) - Day 6 Priority 1
 - **1.0.0** (2026-01-05): Initial release with 16 tools including document generation
 
