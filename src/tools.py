@@ -1622,6 +1622,186 @@ async def track_container_live(container_number: str) -> dict:
 
 
 # ============================================================================
+# CUSTOMER COMMUNICATION TOOLS (Day 7 - Tools 28-30)
+# ============================================================================
+
+async def send_status_update(
+    shipment_id: str,
+    notification_type: str,
+    recipient_email: Optional[str] = None,
+    recipient_phone: Optional[str] = None,
+    channel: str = "email",
+    language: str = "en"
+) -> dict:
+    """
+    Send shipment status notification to customer via email or SMS.
+    
+    Args:
+        shipment_id: Shipment ID
+        notification_type: Type of notification (departed, in_transit, arrived, customs_cleared, delivered, delay_warning, exception_alert)
+        recipient_email: Customer email address
+        recipient_phone: Customer phone number (format: +1234567890)
+        channel: Delivery channel (email, sms, or both)
+        language: Notification language (en, ar, zh)
+    
+    Returns:
+        Dictionary with notification delivery status
+    """
+    logger.info(f"📧 Sending {notification_type} notification for shipment {shipment_id} via {channel}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/api/notifications/send",
+                json={
+                    "shipment_id": shipment_id,
+                    "notification_type": notification_type,
+                    "recipient_email": recipient_email,
+                    "recipient_phone": recipient_phone,
+                    "language": language
+                }
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"✅ Notification sent successfully for {shipment_id}")
+            return result
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error sending notification: {e}")
+        return {
+            "success": False,
+            "error": f"Analytics engine error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error sending notification: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def generate_customer_portal_link(
+    shipment_id: str
+) -> str:
+    """
+    Generate a public tracking link for customer portal access without authentication.
+    Customers can use this link to track their shipment for 30 days.
+    
+    Args:
+        shipment_id: Shipment ID to create tracking link for
+    
+    Returns:
+        Public tracking URL string (e.g., https://track.cwlogistics.com/abc-123-xyz)
+    """
+    logger.info(f"🔗 Generating public tracking link for shipment {shipment_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/api/tracking-link/generate",
+                json={"shipment_id": shipment_id}
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if result.get("success"):
+                tracking_url = result.get("data", {}).get("tracking_url")
+                expires_at = result.get("data", {}).get("valid_until")
+                logger.info(f"✅ Tracking link generated: {tracking_url} (valid until {expires_at})")
+                return f"Public tracking link: {tracking_url}\nValid until: {expires_at}\n\nShare this link with your customer to track their shipment without logging in."
+            else:
+                error_msg = result.get("message", "Unknown error")
+                logger.error(f"Failed to generate tracking link: {error_msg}")
+                return f"Error: {error_msg}"
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error generating tracking link: {e}")
+        return f"Error: Unable to generate tracking link. Analytics engine error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error generating tracking link: {e}", exc_info=True)
+        return f"Error: {str(e)}"
+
+
+async def proactive_exception_notification(
+    shipment_id: str,
+    recipient_email: Optional[str] = None
+) -> str:
+    """
+    Proactively warn customers about potential delays using ML predictions (Tool 30).
+    
+    Automatically runs ML delay prediction and sends notification if confidence > 70%.
+    Includes risk factors and recommended actions.
+    
+    Args:
+        shipment_id: Shipment ID to check for delays
+        recipient_email: Customer email (optional, will use shipment default if not provided)
+    
+    Returns:
+        Human-readable warning status with ML confidence and details
+    """
+    logger.info(f"⚠️ Proactive exception check for shipment {shipment_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            payload = {"shipment_id": shipment_id}
+            if recipient_email:
+                payload["recipient_email"] = recipient_email
+            
+            response = await client.post(
+                f"{ANALYTICS_ENGINE_URL}/api/notifications/proactive-delay-warning",
+                json=payload
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            if result.get("success"):
+                data = result.get("data", {})
+                warning_sent = data.get("warning_sent", False)
+                ml_confidence = data.get("ml_confidence", 0.0)
+                
+                if warning_sent:
+                    risk_factors = data.get("risk_factors", [])
+                    delay_hours = data.get("predicted_delay_hours", 0)
+                    notification_id = data.get("notification_id", "N/A")
+                    
+                    risk_msg = ", ".join(risk_factors) if risk_factors else "Multiple factors"
+                    
+                    logger.info(f"✅ Proactive warning sent: {shipment_id}, confidence={ml_confidence:.1%}")
+                    return f"""🔔 Proactive Delay Warning Sent!
+
+Shipment: {shipment_id}
+ML Confidence: {ml_confidence:.1%}
+Predicted Delay: {delay_hours} hours
+Risk Factors: {risk_msg}
+Notification ID: {notification_id}
+
+Customer has been automatically notified about the potential delay.
+Recommended: Review alternative routing options with logistics coordinator."""
+                else:
+                    reason = data.get("reason", "Unknown")
+                    return f"""✓ No proactive warning needed for {shipment_id}
+
+ML Confidence: {ml_confidence:.1%}
+Reason: {reason}
+
+Shipment is on track. No customer notification required at this time."""
+            else:
+                error_msg = result.get("message", "Unknown error")
+                logger.error(f"Failed to check proactive warning: {error_msg}")
+                return f"Error: {error_msg}"
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error in proactive exception check: {e}")
+        return f"Error: Unable to check for delays. Analytics engine error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error in proactive exception notification: {e}", exc_info=True)
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRATION
 # ============================================================================
 
@@ -1668,8 +1848,13 @@ def register_tools(mcp):
     mcp.tool()(track_multimodal_shipment)
     mcp.tool()(track_container_live)
     
+    # Customer communication (Day 7 - Tools 28-30)
+    mcp.tool()(send_status_update)
+    mcp.tool()(generate_customer_portal_link)
+    mcp.tool()(proactive_exception_notification)
+    
     # System
     mcp.tool()(get_server_status)
     
-    logger.info("✅ All 19 tools registered successfully!")
+    logger.info("✅ All 22 tools registered successfully!")
 

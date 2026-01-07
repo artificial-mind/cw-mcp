@@ -146,8 +146,9 @@ cw-ai-server/
 | `/webhook` | POST | HTTP | 11Labs voice webhook (simple JSON) |
 | `/messages` | POST | JSON-RPC | Alternative MCP endpoint |
 
-### MCP Tools
+### MCP Tools (22 Total)
 
+**Core Logistics (8 tools)**
 | Tool | Description |
 |------|-------------|
 | `search_shipments` | Search with filters (risk, status, container) |
@@ -155,6 +156,39 @@ cw-ai-server/
 | `update_shipment_eta` | Update estimated arrival time |
 | `set_risk_flag` | Flag shipment as high-risk |
 | `add_agent_note` | Add operational notes |
+| `track_container` | Track individual container status |
+| `track_vessel` | Get real-time vessel position and ETA |
+| `get_route_details` | Get multimodal route information |
+
+**Analytics & Reporting (7 tools)**
+| Tool | Description |
+|------|-------------|
+| `generate_operational_report` | Generate daily/weekly/monthly reports |
+| `get_kpi_dashboard` | Get real-time KPIs and metrics |
+| `analyze_trends` | Analyze historical trends |
+| `predictive_delay_detection` | ML-powered delay prediction |
+| `get_eta_updates` | Get ETA changes with reasons |
+| `query_analytics` | Run custom analytics queries |
+| `get_shipment_analytics` | Get detailed shipment analytics |
+
+**Document Management (3 tools)**
+| Tool | Description |
+|------|-------------|
+| `generate_bill_of_lading` | Generate BOL documents |
+| `generate_commercial_invoice` | Generate commercial invoices |
+| `generate_packing_list` | Generate packing lists |
+
+**Customer Communication (2 tools)**
+| Tool | Description |
+|------|-------------|
+| `send_status_update` | Send status notifications to customers |
+| `generate_customer_portal_link` | Generate secure public tracking links |
+
+**Exception Management (2 tools)**
+| Tool | Description |
+|------|-------------|
+| `handle_exception` | Handle and resolve shipment exceptions |
+| `proactive_exception_notification` | Proactive ML-based delay warnings |
 
 ## 🎤 11Labs Voice Integration
 

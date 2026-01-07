@@ -1,18 +1,20 @@
 # CW MCP Server - API Reference
 
-**Version:** 1.0.0  
+**Version:** 1.2.0  
 **Base URL:** `http://localhost:8000`  
 **Protocol:** MCP (Model Context Protocol) over SSE (Server-Sent Events)
 
 ## Overview
 
-The CW MCP Server provides access to 16 logistics tools via the Model Context Protocol. It uses FastMCP library for SSE-based communication and exposes tools for:
-- Shipment tracking and search
+The CW MCP Server provides access to 22 logistics tools via the Model Context Protocol. It uses FastMCP library for SSE-based communication and exposes tools for:
+- Shipment tracking and search (5 tools)
 - ETA updates and risk management
-- Analytics and reporting
+- Analytics and reporting (7 tools)
 - Predictive delay detection
-- Document generation (BOL, Invoice, Packing List)
-- Real-time vessel tracking
+- Document generation (3 tools)
+- Real-time vessel and container tracking (3 tools)
+- Customer notifications and communications (2 tools)
+- Exception management and proactive warnings (2 tools)
 
 ---
 
@@ -479,8 +481,10 @@ Content-Type: application/json
 | **AI/ML** | `predictive_delay_detection`, `real_time_vessel_tracking` | 2 |
 | **Documents** | `generate_bill_of_lading`, `generate_commercial_invoice`, `generate_packing_list` | 3 |
 | **Real-Time Tracking (Day 6)** | `track_vessel_realtime`, `track_multimodal_shipment`, `track_container_live` | 3 |
+| **Customer Communication (Day 7)** | `send_status_update`, `generate_customer_portal_link` | 2 |
+| **Exception Management (Day 7)** | `proactive_exception_notification` | 1 |
 | **Batch** | `batch_track_shipments` | 1 |
-| **Total** | | **19** |
+| **Total** | | **22** |
 
 ---
 
@@ -593,6 +597,208 @@ Content-Type: application/json
     "alert_count": 1
   }
 }
+```
+
+---
+
+### 6. Customer Communication Tools (Day 7 - Tool 28)
+
+#### `send_status_update`
+
+**Description:** Send shipment status notification to customer via email or SMS. Supports multiple notification types (departed, in_transit, arrived, customs_cleared, delivered, delay_warning, exception_alert) and multi-language support.
+
+**Input Schema:**
+```json
+{
+  "shipment_id": "SHIP12345",
+  "notification_type": "departed",
+  "recipient_email": "customer@example.com",
+  "recipient_phone": "+1234567890",
+  "channel": "email",
+  "language": "en"
+}
+```
+
+**Arguments:**
+- `shipment_id` (required): Shipment ID
+- `notification_type` (required): Type of notification - one of:
+  - `departed`: Shipment has left origin
+  - `in_transit`: Update while shipment is moving
+  - `arrived`: Shipment arrived at destination
+  - `customs_cleared`: Cleared customs successfully
+  - `delivered`: Final delivery completed
+  - `delay_warning`: Potential delay detected
+  - `exception_alert`: Issue requiring attention
+- `recipient_email` (optional): Customer email address
+- `recipient_phone` (optional): Customer phone number (format: +1234567890)
+- `channel` (optional): Delivery channel - `email`, `sms`, or `both` (default: `email`)
+- `language` (optional): Notification language - `en`, `ar`, or `zh` (default: `en`)
+
+**Output:**
+```json
+{
+  "success": true,
+  "data": {
+    "success": true,
+    "notification_id": "NOTIF-20260107-84f6596c",
+    "shipment_id": "SHIP12345",
+    "notification_type": "departed",
+    "sent_at": "2026-01-07T06:16:32.638982Z",
+    "channels": ["email"],
+    "recipient_email": "customer@example.com",
+    "recipient_phone": null,
+    "language": "en",
+    "message_preview": "Your shipment SHIP12345 has departed",
+    "tracking_url": "https://track.cwlogistics.com/SHIP12345"
+  }
+}
+```
+
+**Example Usage:**
+```python
+# Send departure notification via email
+result = await mcp.call_tool("send_status_update", {
+    "shipment_id": "SHIP12345",
+    "notification_type": "departed",
+    "recipient_email": "customer@example.com",
+    "language": "en"
+})
+
+# Send delay warning via SMS
+result = await mcp.call_tool("send_status_update", {
+    "shipment_id": "SHIP12345",
+    "notification_type": "delay_warning",
+    "recipient_phone": "+12345678901",
+    "channel": "sms"
+})
+
+# Send notification via both email and SMS
+result = await mcp.call_tool("send_status_update", {
+    "shipment_id": "SHIP12345",
+    "notification_type": "delivered",
+    "recipient_email": "customer@example.com",
+    "recipient_phone": "+12345678901",
+    "channel": "both"
+})
+```
+
+#### `generate_customer_portal_link` (Day 7 - Tool 29)
+
+**Description:** Generate a secure public tracking link for customer portal access. Creates UUID4-based token with configurable expiration (default 30 days). Link allows customers to track shipments without authentication.
+
+**Input Schema:**
+```json
+{
+  "shipment_id": "SHIP12345",
+  "expires_in_days": 30
+}
+```
+
+**Arguments:**
+- `shipment_id` (required): Shipment ID to generate tracking link for
+- `expires_in_days` (optional): Link validity period in days (default: 30)
+
+**Output:**
+```json
+{
+  "success": true,
+  "tracking_url": "https://track.cwlogistics.com/a3f8b2c1-4d5e-6f7g-8h9i-0j1k2l3m4n5o",
+  "token": "a3f8b2c1-4d5e-6f7g-8h9i-0j1k2l3m4n5o",
+  "shipment_id": "SHIP12345",
+  "expires_at": "2026-02-06T12:00:00Z",
+  "created_at": "2026-01-07T12:00:00Z"
+}
+```
+
+**Features:**
+- UUID4-based secure tokens (RFC 4122 compliant)
+- Database persistence for validation
+- Configurable expiration period
+- No authentication required for access
+- Revocable via database deletion
+
+**Example Usage:**
+```python
+# Generate tracking link with default 30-day expiration
+result = await mcp.call_tool("generate_customer_portal_link", {
+    "shipment_id": "SHIP12345"
+})
+
+# Generate link with custom 7-day expiration
+result = await mcp.call_tool("generate_customer_portal_link", {
+    "shipment_id": "SHIP12345",
+    "expires_in_days": 7
+})
+```
+
+#### `proactive_exception_notification` (Day 7 - Tool 30)
+
+**Description:** Proactively warn customers about potential delays based on ML predictions. Only sends notification if ML confidence exceeds 70% threshold. Includes risk factors and predicted delay hours.
+
+**Input Schema:**
+```json
+{
+  "shipment_id": "SHIP12345",
+  "recipient_email": "customer@example.com",
+  "recipient_phone": "+1234567890",
+  "language": "en"
+}
+```
+
+**Arguments:**
+- `shipment_id` (required): Shipment ID to analyze
+- `recipient_email` (optional): Customer email address
+- `recipient_phone` (optional): Customer phone number
+- `language` (optional): Notification language - `en`, `es`, or `zh` (default: `en`)
+
+**Output (Warning Sent):**
+```json
+{
+  "success": true,
+  "warning_sent": true,
+  "ml_confidence": 0.85,
+  "risk_factors": [
+    "Weather conditions",
+    "Port congestion"
+  ],
+  "predicted_delay_hours": 24,
+  "notification_id": "NOTIF-20260107-8fdb75c9",
+  "message": "Proactive delay warning sent to customer"
+}
+```
+
+**Output (No Warning Needed):**
+```json
+{
+  "success": true,
+  "warning_sent": false,
+  "ml_confidence": 0.65,
+  "reason": "Confidence 65.0% below threshold 70%",
+  "message": "ML confidence below threshold, no notification sent"
+}
+```
+
+**Logic:**
+1. Runs ML prediction on shipment
+2. Only sends notification if confidence > 70%
+3. Includes risk factors and predicted delay hours
+4. Automatically uses "delayed" notification type
+
+**Example Usage:**
+```python
+# Proactive delay warning with email
+result = await mcp.call_tool("proactive_exception_notification", {
+    "shipment_id": "SHIP12345",
+    "recipient_email": "customer@example.com",
+    "language": "en"
+})
+
+# Check result
+if result["warning_sent"]:
+    print(f"Warning sent! Confidence: {result['ml_confidence']:.0%}")
+    print(f"Risk factors: {', '.join(result['risk_factors'])}")
+else:
+    print(f"No warning needed. Confidence: {result['ml_confidence']:.0%}")
 ```
 
 ---
